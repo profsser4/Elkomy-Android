@@ -1,20 +1,23 @@
 package com.elkomy.app
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
-import android.app.DownloadManager
 import android.content.ContentValues
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
-import android.widget.Toast
-import java.io.File
-import android.content.Intent
-import android.net.Uri
-import android.os.Bundle
 import android.webkit.*
 import android.widget.EditText
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     lateinit var web: WebView
@@ -28,8 +31,14 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this@MainActivity, PlayerActivity::class.java)
                 .putExtra("url", url).putExtra("title", title).putExtra("start", startSec))
         }
+        /** بيضيف الملف في طابور التحميل (ملف ورا ملف تلقائي) */
         @JavascriptInterface
         fun download(url: String, name: String) = runOnUiThread { dl(url, name) }
+        /** بيفتح شاشة التحميلات (العدّاد + النسبة) */
+        @JavascriptInterface
+        fun openDownloads() = runOnUiThread {
+            startActivity(Intent(this@MainActivity, DownloadsActivity::class.java))
+        }
         @JavascriptInterface
         fun saveText(name: String, text: String) = runOnUiThread { saveTxt(name, text) }
         @JavascriptInterface
@@ -68,6 +77,15 @@ class MainActivity : AppCompatActivity() {
         val url = if (baked.startsWith("http") && !baked.contains("CHANGE-ME")) baked else prefs.getString("url", null)
         if (url == null) askUrl("اكتب رابط السيرفر") else web.loadUrl(url)
         checkUpdate()
+        askNotifPermission()
+    }
+
+    /** أندرويد 13+ محتاج إذن الإشعارات عشان إشعار نسبة التحميل يظهر */
+    private fun askNotifPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 77)
+        }
     }
 
     private fun checkUpdate() {
@@ -94,14 +112,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun clean(n: String) = n.replace(Regex("[\\\\/:*?\"<>|]+"), "_").ifBlank { "video.mkv" }
 
+    /** التحميل بقى بيدخل طابور التطبيق: كل ملف يبدأ بعد اللي قبله لوحده */
     private fun dl(url: String, name: String) {
         try {
             val n = clean(name)
-            val r = DownloadManager.Request(Uri.parse(url)).setTitle(n)
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Elkomy/$n")
-            (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(r)
-            Toast.makeText(this, "بدأ التحميل: Download/Elkomy", Toast.LENGTH_LONG).show()
+            val before = DownloadQueue.items.count {
+                it.state == DownloadQueue.State.QUEUED || it.state == DownloadQueue.State.RUNNING
+            }
+            DownloadQueue.enqueue(this, url, n)
+            Toast.makeText(
+                this,
+                if (before == 0) "بدأ التحميل ⬇ (تابعه من زرار التحميلات)" else "اتضاف للطابور · رقم ${before + 1}",
+                Toast.LENGTH_LONG
+            ).show()
         } catch (e: Exception) { Toast.makeText(this, "فشل التحميل: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
