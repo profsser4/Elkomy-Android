@@ -30,6 +30,8 @@ class PlayerActivity : AppCompatActivity() {
     private var dragging = false
     private var started = false
     private var n = 0
+    private var sub = ""
+    private var subAdded = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -66,9 +68,16 @@ class PlayerActivity : AppCompatActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+        sub = (intent.getStringExtra("title") ?: "").substringAfter("\n@@SUB@@", "")
         vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500"))
         mp = MediaPlayer(vlc)
-        mp.setEventListener { ev -> if (ev.type == MediaPlayer.Event.EndReached) { report(true); finish() } }
+        mp.setEventListener { ev ->
+            if (ev.type == MediaPlayer.Event.EndReached) { report(true); finish() }
+            else if (ev.type == MediaPlayer.Event.Playing && sub.isNotEmpty() && !subAdded) {
+                subAdded = true
+                try { mp.addSlave(0, Uri.parse(sub), true) } catch (_: Throwable) {}
+            }
+        }
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         video = VLCVideoLayout(this)
         root.addView(video)
