@@ -287,7 +287,7 @@ class DownloadsActivity : AppCompatActivity() {
             setOnClickListener {
                 val opts = intArrayOf(1, 4, 8, 16)
                 val nx = opts[(opts.indexOf(DownloadQueue.conns) + 1) % opts.size]
-                DownloadQueue.setConns(nx)
+                DownloadQueue.saveConns(nx)
                 text = "⚡ $nx اتصال"
             }
         }

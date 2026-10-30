@@ -110,7 +110,7 @@ object DownloadQueue {
         } catch (_: Throwable) {}
     }
 
-    fun setConns(n: Int) {
+    fun saveConns(n: Int) {
         conns = n
         app?.getSharedPreferences("dlq", Context.MODE_PRIVATE)?.edit()?.putInt("conns", n)?.apply()
     }
