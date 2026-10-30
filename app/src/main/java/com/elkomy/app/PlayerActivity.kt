@@ -627,7 +627,9 @@ class PlayerActivity : AppCompatActivity() {
                 if (fd != null) Media(vlc, fd.fileDescriptor) else Media(vlc, u)
             } else Media(vlc, u)
             m.setHWDecoderEnabled(true, false)
-            val st = intent.getIntExtra("start", 0)
+            val local = u.scheme == "content" || u.scheme == "file"
+            var st = intent.getIntExtra("start", 0)
+            if (st <= 0 && local) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
             if (st > 5) m.addOption(":start-time=$st")
             mp.media = m
             m.release()
@@ -642,6 +644,16 @@ class PlayerActivity : AppCompatActivity() {
         h.removeCallbacks(hideRun)
         panel?.dismiss()
         report(false)
+        try {
+            val url = intent.getStringExtra("url") ?: ""
+            val len = mp.length / 1000
+            if ((url.startsWith("content:") || url.startsWith("file:")) && len > 0) {
+                val pos = mp.time / 1000
+                val e = getSharedPreferences("pos", MODE_PRIVATE).edit()
+                if (pos > len * 0.95) e.remove("p:$url") else e.putInt("p:$url", pos.toInt())
+                e.apply()
+            }
+        } catch (_: Throwable) {}
         mp.pause()
         mp.detachViews()
     }

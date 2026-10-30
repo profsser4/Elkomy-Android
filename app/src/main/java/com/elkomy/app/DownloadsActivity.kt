@@ -164,7 +164,13 @@ class DownloadsActivity : AppCompatActivity() {
                     }
                     a2.visibility = View.VISIBLE
                     a2.text = "🗑"
-                    a2.setOnClickListener { DownloadQueue.remove(item); refresh() }
+                    a2.setOnClickListener {
+                        android.app.AlertDialog.Builder(this@DownloadsActivity).setTitle(item.name)
+                            .setItems(arrayOf("حذف من القايمة فقط", "حذف الملف من الجهاز")) { _, w ->
+                                if (w == 1) DownloadQueue.deleteFile(this@DownloadsActivity, item) else DownloadQueue.remove(item)
+                                refresh()
+                            }.setNegativeButton("إلغاء", null).show()
+                    }
                 }
                 State.FAILED, State.CANCELED -> {
                     fg.setColor(RED)
@@ -196,6 +202,7 @@ class DownloadsActivity : AppCompatActivity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        DownloadQueue.load(this)
         supportActionBar?.hide()
         val ctx = this
         val root = LinearLayout(ctx).apply {
@@ -218,7 +225,7 @@ class DownloadsActivity : AppCompatActivity() {
         })
         top.addView(txt(ctx, 20f, Color.WHITE, true).apply { text = "⬇ التحميلات" }, LinearLayout.LayoutParams(0, -2, 1f))
         top.addView(txt(ctx, 13f, BLUE, true).apply {
-            text = "مسح المكتمل"
+            text = "مسح الفاشل"
             setPadding(dp(10), dp(6), dp(10), dp(6))
             isClickable = true
             isFocusable = true

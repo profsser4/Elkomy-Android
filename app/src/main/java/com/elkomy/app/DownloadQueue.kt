@@ -25,6 +25,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.CopyOnWriteArrayList
@@ -51,6 +53,64 @@ object DownloadQueue {
     private val seq = AtomicLong(1)
     @Volatile private var batch = 0
 
+    private var app: Context? = null
+
+    /** بيرجّع قايمة التحميلات اللي اتحمّلت قبل كده (عشان تفضل ظاهرة وتتشغّل من مشغّل التطبيق) */
+    @Synchronized fun load(ctx: Context) {
+        if (app != null) return
+        val a = ctx.applicationContext
+        app = a
+        try {
+            val arr = JSONArray(a.getSharedPreferences("dlq", Context.MODE_PRIVATE).getString("items", "[]"))
+            var mx = 0L
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val it = Item(o.getLong("id"), o.getString("url"), o.getString("name"), 0)
+                it.total = o.optLong("total"); it.done = o.optLong("done")
+                it.uri = o.optString("uri").ifEmpty { null }
+                val st = State.valueOf(o.optString("state", "FAILED"))
+                if (st == State.DONE) {
+                    if (!exists(a, it.uri)) continue
+                    it.state = State.DONE
+                } else { it.state = State.FAILED; it.error = "اتقطع (التطبيق اتقفل)" }
+                items.add(it); mx = maxOf(mx, it.id)
+            }
+            seq.set(mx + 1)
+        } catch (_: Throwable) {}
+    }
+
+    private fun exists(c: Context, u: String?): Boolean {
+        if (u == null) return false
+        return try {
+            if (u.startsWith("file:")) File(Uri.parse(u).path ?: return false).exists()
+            else { c.contentResolver.openAssetFileDescriptor(Uri.parse(u), "r")?.use { true } ?: false }
+        } catch (_: Throwable) { false }
+    }
+
+    fun save() {
+        val a = app ?: return
+        try {
+            val arr = JSONArray()
+            items.forEach {
+                arr.put(JSONObject().put("id", it.id).put("url", it.url).put("name", it.name)
+                    .put("state", it.state.name).put("total", it.total).put("done", it.done).put("uri", it.uri ?: ""))
+            }
+            a.getSharedPreferences("dlq", Context.MODE_PRIVATE).edit().putString("items", arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    /** بيحذف الملف نفسه من الجهاز وبعدين من القايمة */
+    fun deleteFile(ctx: Context, item: Item) {
+        try {
+            val u = item.uri
+            if (u != null) {
+                if (u.startsWith("file:")) File(Uri.parse(u).path ?: "").delete()
+                else ctx.contentResolver.delete(Uri.parse(u), null, null)
+            }
+        } catch (_: Throwable) {}
+        remove(item)
+    }
+
     private fun busy() = items.any { it.state == State.QUEUED || it.state == State.RUNNING }
 
     fun enqueue(ctx: Context, url: String, name: String): Item {
@@ -62,6 +122,7 @@ object DownloadQueue {
             item = Item(seq.getAndIncrement(), url, name, batch)
             items.add(item)
         }
+        save()
         start(ctx)
         return item
     }
@@ -85,15 +146,18 @@ object DownloadQueue {
             item.done = 0; item.total = 0; item.speed = 0; item.error = ""
             item.state = State.QUEUED
         }
+        save()
         start(ctx)
     }
 
     fun remove(item: Item) {
         if (item.state != State.RUNNING) items.remove(item)
+        save()
     }
 
     fun clearFinished() {
-        items.removeAll { it.state == State.DONE || it.state == State.FAILED || it.state == State.CANCELED }
+        items.removeAll { it.state == State.FAILED || it.state == State.CANCELED }   // المكتمل بيفضل عشان تشغّله من التطبيق؛ امسحه بالسلة 🗑
+        save()
     }
 
     fun batchItems(): List<Item> = items.filter { it.batch == batch }
@@ -286,6 +350,7 @@ class DownloadService : Service() {
             }
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}
+            DownloadQueue.save()
         }
     }
 

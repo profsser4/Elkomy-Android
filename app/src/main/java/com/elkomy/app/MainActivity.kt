@@ -23,6 +23,17 @@ class MainActivity : AppCompatActivity() {
     lateinit var web: WebView
     companion object { var inst: MainActivity? = null }
     private var dialogOpen = false
+    private var custom: android.view.View? = null
+    private var customCb: WebChromeClient.CustomViewCallback? = null
+    private fun hideCustom() {
+        val v = custom ?: return
+        (v.parent as? android.view.ViewGroup)?.removeView(v)
+        custom = null
+        customCb?.onCustomViewHidden(); customCb = null
+        web.visibility = android.view.View.VISIBLE
+        window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_VISIBLE
+    }
+    override fun onResume() { super.onResume(); UpdateManager.check(this) }
     private val prefs by lazy { getSharedPreferences("cfg", MODE_PRIVATE) }
 
     inner class Bridge {
@@ -42,6 +53,10 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun saveText(name: String, text: String) = runOnUiThread { saveTxt(name, text) }
         @JavascriptInterface
+        fun checkUpdate() = runOnUiThread { UpdateManager.check(this@MainActivity, true) }
+        @JavascriptInterface
+        fun appVersion(): Int = BuildConfig.VERSION_CODE
+        @JavascriptInterface
         fun changeServer() = runOnUiThread { askUrl("تغيير السيرفر") }
     }
 
@@ -49,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         inst = this
+        DownloadQueue.load(this)
         web = WebView(this)
         setContentView(web)
         web.settings.apply {
@@ -57,6 +73,17 @@ class MainActivity : AppCompatActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
         web.addJavascriptInterface(Bridge(), "AndroidPlayer")
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onShowCustomView(v: android.view.View, cb: CustomViewCallback) {
+                if (custom != null) { cb.onCustomViewHidden(); return }
+                custom = v; customCb = cb
+                addContentView(v, android.view.ViewGroup.LayoutParams(-1, -1))
+                web.visibility = android.view.View.GONE
+                window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            }
+            override fun onHideCustomView() { hideCustom() }
+        }
         web.webViewClient = object : WebViewClient() {
             override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
                 if (r.isForMainFrame) askUrl("تعذّر الاتصال بالسيرفر")
@@ -88,27 +115,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun checkUpdate() {
-        val repo = BuildConfig.REPO
-        if (!repo.contains("/") || repo.contains("CHANGE-ME")) return
-        Thread {
-            try {
-                val c = java.net.URL("https://github.com/$repo/releases/latest/download/version.txt")
-                    .openConnection() as java.net.HttpURLConnection
-                c.connectTimeout = 8000; c.readTimeout = 8000
-                val latest = c.inputStream.bufferedReader().readText().trim().toInt()
-                if (latest > BuildConfig.VERSION_CODE) runOnUiThread {
-                    if (isFinishing) return@runOnUiThread
-                    AlertDialog.Builder(this).setTitle("نسخة جديدة متاحة")
-                        .setMessage("في تحديث جديد للتطبيق. اضغط تحديث لتنزيله وتثبيته فوق النسخة الحالية.")
-                        .setPositiveButton("تحديث") { _, _ ->
-                            startActivity(Intent(Intent.ACTION_VIEW,
-                                Uri.parse("https://github.com/$repo/releases/latest/download/app-debug.apk")))
-                        }.setNegativeButton("بعدين", null).show()
-                }
-            } catch (_: Exception) {}
-        }.start()
-    }
+    private fun checkUpdate() = UpdateManager.check(this)
 
     private fun clean(n: String) = n.replace(Regex("[\\\\/:*?\"<>|]+"), "_").ifBlank { "video.mkv" }
 
@@ -159,6 +166,6 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
+        if (custom != null) hideCustom() else if (web.canGoBack()) web.goBack() else super.onBackPressed()
     }
 }
