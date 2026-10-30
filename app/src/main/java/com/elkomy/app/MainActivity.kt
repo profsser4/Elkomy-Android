@@ -85,6 +85,17 @@ class MainActivity : AppCompatActivity() {
             override fun onHideCustomView() { hideCustom() }
         }
         web.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(v: WebView, u: String?) {
+                // شارة صغيرة بتعرض رقم النسخة؛ لو دوست عليها بيفحص التحديث
+                val js = "(function(){if(document.getElementById('appVerBadge'))return;" +
+                    "var b=document.createElement('div');b.id='appVerBadge';" +
+                    "b.textContent='v${BuildConfig.VERSION_CODE} ⟳';" +
+                    "b.style.cssText='position:fixed;bottom:6px;left:6px;z-index:2147483647;" +
+                    "background:rgba(0,0,0,.55);color:#fff;font:11px sans-serif;padding:3px 8px;border-radius:10px';" +
+                    "b.onclick=function(){AndroidPlayer.checkUpdate()};" +
+                    "document.body.appendChild(b)})()"
+                v.evaluateJavascript(js, null)
+            }
             override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
                 if (r.isForMainFrame) askUrl("تعذّر الاتصال بالسيرفر")
             }
