@@ -2,7 +2,9 @@ package com.elkomy.app
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.ColorDrawable
@@ -39,9 +41,33 @@ fun dlEta(s: Long): String {
     return if (h > 0) "${h}س ${m}د" else if (m > 0) "${m}د ${x}ث" else "${x}ث"
 }
 
+/** شريط الأجزاء (زي IDM): كل مربع = جزء من الملف وبيتملا وهو بيتحمّل */
+class SegBar(ctx: Context) : View(ctx) {
+    var segs = IntArray(0)
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    override fun onDraw(c: Canvas) {
+        val n = segs.size
+        if (n == 0) return
+        val h = height.toFloat()
+        val cw = width.toFloat() / n
+        val gap = 1.5f
+        for (i in 0 until n) {
+            val x = i * cw
+            p.color = 0xFF273449.toInt()
+            c.drawRect(x, 0f, x + cw - gap, h, p)
+            val f = segs[i].coerceIn(0, 100) / 100f
+            if (f > 0f) {
+                p.color = 0xFF38BDF8.toInt()
+                c.drawRect(x, 0f, x + (cw - gap) * f, h, p)
+            }
+        }
+    }
+}
+
 class DownloadsActivity : AppCompatActivity() {
     private val h = Handler(Looper.getMainLooper())
     private lateinit var tvBig: TextView
+    private lateinit var tvConns: TextView
     private lateinit var tvSum: TextView
     private lateinit var overall: ProgressBar
     private lateinit var empty: TextView
@@ -93,6 +119,8 @@ class DownloadsActivity : AppCompatActivity() {
         val a2 = txt(ctx, 20f, Color.WHITE)
         val bar: ProgressBar
         val fg: GradientDrawable
+        val seg = SegBar(ctx)
+        val detail = txt(ctx, 11f, GRAY)
 
         init {
             val (b, f) = makeBar(ctx, 8)
@@ -118,6 +146,8 @@ class DownloadsActivity : AppCompatActivity() {
             info.gravity = Gravity.END
             r3.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
             root.addView(r3, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            root.addView(seg, LinearLayout.LayoutParams(-1, dp(10)).apply { topMargin = dp(6) })
+            root.addView(detail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
             root.tag = this
         }
 
@@ -127,6 +157,8 @@ class DownloadsActivity : AppCompatActivity() {
             val done = item.done
             a2.visibility = View.GONE
             a1.visibility = View.VISIBLE
+            seg.visibility = View.GONE
+            detail.visibility = View.GONE
             when (item.state) {
                 State.RUNNING -> {
                     val p = if (total > 0) (done * 1000 / total).toInt() else 0
@@ -138,8 +170,20 @@ class DownloadsActivity : AppCompatActivity() {
                     info.text = (if (total > 0) "${dlSize(done)} / ${dlSize(total)}" else dlSize(done)) +
                         (if (item.speed > 0) " · ${dlSize(item.speed)}/s" else "") +
                         (if (eta >= 0) " · متبقي ${dlEta(eta)}" else "")
-                    a1.text = "✖"
-                    a1.setOnClickListener { DownloadQueue.cancel(item) }
+                    a1.text = if (item.paused) "▶" else "⏸"
+                    a1.setOnClickListener { DownloadQueue.togglePause(item) }
+                    a2.visibility = View.VISIBLE
+                    a2.text = "✖"
+                    a2.setOnClickListener { DownloadQueue.cancel(item) }
+                    if (item.segs.size > 1) {
+                        seg.segs = item.segs
+                        seg.visibility = View.VISIBLE
+                        seg.invalidate()
+                    }
+                    detail.visibility = View.VISIBLE
+                    detail.text = if (item.note.isNotEmpty()) item.note
+                        else if (item.paused) "⏸ متوقف مؤقتاً — دوس ▶ تكمّل"
+                        else if (item.conns > 0) "⚡ ${item.conns} اتصالات متوازية" else "جاري الاتصال..."
                 }
                 State.QUEUED -> {
                     bar.progress = 0
@@ -173,12 +217,23 @@ class DownloadsActivity : AppCompatActivity() {
                     }
                 }
                 State.FAILED, State.CANCELED -> {
-                    fg.setColor(RED)
+                    val resumable = item.state == State.FAILED && DownloadQueue.canResume(item)
+                    val col = if (resumable) 0xFFF59E0B.toInt() else RED
+                    fg.setColor(col)
                     bar.progress = if (total > 0) (done * 1000 / total).toInt() else 0
-                    pct.text = if (item.state == State.FAILED) "✕" else "⏹"
-                    pct.setTextColor(RED)
-                    info.text = if (item.state == State.FAILED) "فشل: ${item.error}" else "اتلغى"
-                    a1.text = "↻"
+                    pct.text = if (resumable) "⏸ ${if (total > 0) done * 100 / total else 0}%" else if (item.state == State.FAILED) "✕" else "⏹"
+                    pct.setTextColor(col)
+                    info.text = if (item.state == State.FAILED) (if (resumable) "${dlSize(done)} / ${dlSize(total)} · ${item.error}" else "فشل: ${item.error}") else "اتلغى"
+                    if (resumable && item.gots != null) {
+                        val g = item.gots!!
+                        seg.segs = IntArray(g.size) { idx ->
+                            val len = minOf(total, (idx + 1) * item.chunk) - idx * item.chunk
+                            if (len > 0) (g[idx] * 100 / len).toInt() else 0
+                        }
+                        seg.visibility = View.VISIBLE
+                        seg.invalidate()
+                    }
+                    a1.text = if (resumable) "▶" else "↻"
                     a1.setOnClickListener { DownloadQueue.retry(this@DownloadsActivity, item) }
                     a2.visibility = View.VISIBLE
                     a2.text = "🗑"
@@ -224,6 +279,19 @@ class DownloadsActivity : AppCompatActivity() {
             setOnClickListener { finish() }
         })
         top.addView(txt(ctx, 20f, Color.WHITE, true).apply { text = "⬇ التحميلات" }, LinearLayout.LayoutParams(0, -2, 1f))
+        tvConns = txt(ctx, 13f, GREEN, true).apply {
+            text = "⚡ ${DownloadQueue.conns} اتصال"
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                val opts = intArrayOf(1, 4, 8, 16)
+                val nx = opts[(opts.indexOf(DownloadQueue.conns) + 1) % opts.size]
+                DownloadQueue.setConns(nx)
+                text = "⚡ $nx اتصال"
+            }
+        }
+        top.addView(tvConns)
         top.addView(txt(ctx, 13f, BLUE, true).apply {
             text = "مسح الفاشل"
             setPadding(dp(10), dp(6), dp(10), dp(6))
@@ -302,7 +370,7 @@ class DownloadsActivity : AppCompatActivity() {
         tvSum.text = if (active) {
             val cur = batch.firstOrNull { it.state == State.RUNNING }
             "جاري تحميل ملف ${minOf(finished + 1, n)} من $n" +
-                (if (cur != null && cur.speed > 0) "\n⚡ ${dlSize(cur.speed)}/s" else "")
+                (if (cur != null && cur.paused) "\n⏸ متوقف" else if (cur != null && cur.speed > 0) "\n⚡ ${dlSize(cur.speed)}/s" else "")
         } else {
             "✓ خلص: $okN من $n" + (if (failN > 0) " · $failN فشل أو اتلغى" else "")
         }

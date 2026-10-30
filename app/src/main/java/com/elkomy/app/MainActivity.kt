@@ -45,6 +45,13 @@ class MainActivity : AppCompatActivity() {
         /** بيضيف الملف في طابور التحميل (ملف ورا ملف تلقائي) */
         @JavascriptInterface
         fun download(url: String, name: String) = runOnUiThread { dl(url, name) }
+        /** نفس التحميل بس مع وصف يستخدمه التطبيق يجدّد الرابط (debrid) لو انتهى وإنت بتكمّل */
+        @JavascriptInterface
+        fun downloadR(url: String, name: String, src: String) = runOnUiThread { dl(url, name, src) }
+        @JavascriptInterface
+        fun setLink(id: Long, url: String) { DownloadQueue.setLink(id, url) }
+        @JavascriptInterface
+        fun refreshFail(id: Long, msg: String) { DownloadQueue.refreshFail(id, msg) }
         /** بيفتح شاشة التحميلات (العدّاد + النسبة) */
         @JavascriptInterface
         fun openDownloads() = runOnUiThread {
@@ -56,6 +63,8 @@ class MainActivity : AppCompatActivity() {
         fun checkUpdate() = runOnUiThread { UpdateManager.check(this@MainActivity, true) }
         @JavascriptInterface
         fun appVersion(): Int = BuildConfig.VERSION_CODE
+        @JavascriptInterface
+        fun dlActive(): Int = DownloadQueue.activeCount()
         @JavascriptInterface
         fun changeServer() = runOnUiThread { askUrl("تغيير السيرفر") }
     }
@@ -131,13 +140,15 @@ class MainActivity : AppCompatActivity() {
     private fun clean(n: String) = n.replace(Regex("[\\\\/:*?\"<>|]+"), "_").ifBlank { "video.mkv" }
 
     /** التحميل بقى بيدخل طابور التطبيق: كل ملف يبدأ بعد اللي قبله لوحده */
-    private fun dl(url: String, name: String) {
+    fun runJs(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
+
+    private fun dl(url: String, name: String, src: String = "") {
         try {
             val n = clean(name)
             val before = DownloadQueue.items.count {
                 it.state == DownloadQueue.State.QUEUED || it.state == DownloadQueue.State.RUNNING
             }
-            DownloadQueue.enqueue(this, url, n)
+            DownloadQueue.enqueue(this, url, n, src)
             Toast.makeText(
                 this,
                 if (before == 0) "بدأ التحميل ⬇ (تابعه من زرار التحميلات)" else "اتضاف للطابور · رقم ${before + 1}",
