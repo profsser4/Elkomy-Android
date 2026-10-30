@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
         custom = null
         customCb?.onCustomViewHidden(); customCb = null
         web.visibility = android.view.View.VISIBLE
-        window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_VISIBLE
+        window.decorView.systemUiVisibility = 0
     }
     override fun onResume() { super.onResume(); UpdateManager.check(this) }
     private val prefs by lazy { getSharedPreferences("cfg", MODE_PRIVATE) }
