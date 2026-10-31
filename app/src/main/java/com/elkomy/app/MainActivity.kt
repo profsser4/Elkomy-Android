@@ -67,6 +67,78 @@ class MainActivity : AppCompatActivity() {
         fun dlActive(): Int = DownloadQueue.activeCount()
         @JavascriptInterface
         fun changeServer() = runOnUiThread { askUrl("تغيير السيرفر") }
+
+        /**
+         * جسر الـIPTV: الطلب بيطلع من التليفون نفسه (آيبي مصري + http مسموح + من غير CORS).
+         * بيشتغل في الخلفية، ولما يخلص بينادي window.__nh(id, status) وبعدين الصفحة تاخد النتيجة بـ httpTake(id).
+         * keep = أسماء حقول مفصولة بفاصلة: لو الرد قايمة كبيرة بنسيب الحقول دي بس (أخف بكتير على الصفحة).
+         * ttlMin = كام دقيقة نعيد استخدام نسخة محفوظة على التليفون (0 = من غير كاش).
+         */
+        @JavascriptInterface
+        fun httpGet(id: String, url: String, keep: String, ttlMin: Int) { iptvFetch(id, url, keep, ttlMin) }
+        @JavascriptInterface
+        fun httpTake(id: String): String = httpRes.remove(id) ?: ""
+    }
+
+    private val httpRes = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun iptvFetch(id: String, url: String, keep: String, ttlMin: Int) {
+        Thread {
+            var status = 0
+            var out = ""
+            try {
+                val dir = File(cacheDir, "iptv").apply { mkdirs() }
+                val cf = File(dir, java.security.MessageDigest.getInstance("SHA-1")
+                    .digest((url + "|" + keep).toByteArray()).joinToString("") { "%02x".format(it) } + ".json")
+                if (ttlMin > 0 && cf.exists() && System.currentTimeMillis() - cf.lastModified() < ttlMin * 60_000L) {
+                    out = cf.readText(); status = 200
+                } else {
+                    var u = url
+                    var hops = 0
+                    while (true) {
+                        val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+                        c.connectTimeout = 15000; c.readTimeout = 60000
+                        c.instanceFollowRedirects = false
+                        c.setRequestProperty("User-Agent", "VLC/3.0.20 LibVLC/3.0.20")
+                        status = c.responseCode
+                        if (status in 301..308 && hops++ < 5) {
+                            val loc = c.getHeaderField("Location")
+                            if (!loc.isNullOrBlank()) { u = java.net.URL(java.net.URL(u), loc).toString(); c.disconnect(); continue }
+                        }
+                        val st = if (status in 200..399) c.inputStream else c.errorStream
+                        val raw = st?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                        out = if (status in 200..299) trimJson(raw, keep) else raw.take(300)
+                        if (status in 200..299 && ttlMin > 0) try { cf.writeText(out) } catch (_: Exception) {}
+                        c.disconnect()
+                        break
+                    }
+                }
+            } catch (e: Throwable) {
+                status = 0
+                out = (e.message ?: e.javaClass.simpleName).take(200)
+            }
+            httpRes[id] = out
+            runJs("window.__nh&&__nh(${org.json.JSONObject.quote(id)},$status)")
+        }.start()
+    }
+
+    /** قايمة JSON كبيرة -> نسيب الحقول المطلوبة بس */
+    private fun trimJson(raw: String, keep: String): String {
+        if (keep.isBlank()) return raw
+        val t = raw.trimStart()
+        if (!t.startsWith("[")) return raw
+        return try {
+            val keys = keep.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            val arr = org.json.JSONArray(t)
+            val res = org.json.JSONArray()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val n = org.json.JSONObject()
+                for (k in keys) if (o.has(k)) n.put(k, o.get(k))
+                res.put(n)
+            }
+            res.toString()
+        } catch (_: Throwable) { raw }
     }
 
     @SuppressLint("SetJavaScriptEnabled")

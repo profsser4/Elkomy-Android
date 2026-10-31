@@ -631,6 +631,7 @@ class PlayerActivity : AppCompatActivity() {
             var st = intent.getIntExtra("start", 0)
             if (st <= 0 && local) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
             if (st > 5) m.addOption(":start-time=$st")
+            if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000") }
             mp.media = m
             m.release()
         }
