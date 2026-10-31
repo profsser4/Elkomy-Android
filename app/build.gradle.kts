@@ -10,7 +10,7 @@ android {
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt(); versionName = "1.0"
         val srv = file("../server_url.txt").takeIf { it.exists() }?.readText()?.trim() ?: ""
         buildConfigField("String", "SERVER_URL", "\"$srv\"")
-        val repo = file("../repo.txt").takeIf { it.exists() }?.readText()?.trim() ?: ""
+        val repo = file("../repo.txt").takeIf { it.exists() }?.readText()?.trim() ?: "CHANGE-ME/CHANGE-ME"
         buildConfigField("String", "REPO", "\"$repo\"")
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
