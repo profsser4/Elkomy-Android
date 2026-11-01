@@ -99,6 +99,7 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
 }
 
 class PlayerActivity : AppCompatActivity() {
+    companion object { @Volatile var inst: PlayerActivity? = null }
     private lateinit var vlc: LibVLC
     private lateinit var mp: MediaPlayer
     private lateinit var video: VLCVideoLayout
@@ -129,6 +130,11 @@ class PlayerActivity : AppCompatActivity() {
     private var lastDir = 0
     private val ripHide = arrayOfNulls<Runnable>(2)
 
+    // زرار «الحلقة التالية» (بيظهر في آخر 200 ثانية بعدّاد)
+    private var nextLabel = ""
+    private var nextBtn: TextView? = null
+    private var skipStopReport = false
+
     private val RED = 0xFFE50914.toInt()
 
     private val hideRun = Runnable { hideUi() }
@@ -143,6 +149,7 @@ class PlayerActivity : AppCompatActivity() {
                 tvRemain.text = fmt(len - t)
             }
             playBtn.setKind(if (mp.isPlaying) IconView.PAUSE else IconView.PLAY)
+            updateNext()
             h.postDelayed(this, 500)
         }
     }
@@ -261,6 +268,7 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         buildUi()
+        inst = this
     }
 
     private fun buildUi() {
@@ -407,8 +415,53 @@ class PlayerActivity : AppCompatActivity() {
         ui.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
         root.addView(ui, FrameLayout.LayoutParams(-1, -1))
+
+        // ---- زرار الحلقة التالية: فوق كل حاجة، مخفي لحد آخر 200 ثانية
+        nextBtn = TextView(this).apply {
+            setTextColor(Color.BLACK)
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = round(Color.WHITE, 6)
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { goNext() }
+            focusScale(this)
+        }
+        root.addView(nextBtn, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+            marginEnd = dp(28); bottomMargin = dp(118)
+        })
         setContentView(root)
         showUi()
+    }
+
+    // ================= الحلقة التالية =================
+    /** الصفحة بتنادي عليها (AndroidPlayer.showNext) لما يبقى فيه حلقة تالية؛ العدّاد بيتحسب هنا */
+    fun setNext(label: String) {
+        nextLabel = label
+        updateNext()
+    }
+
+    private fun updateNext() {
+        val b = nextBtn ?: return
+        if (isDestroyed || isFinishing) return
+        val len = mp.length
+        val left = if (len > 0) (len - mp.time) / 1000 else -1L
+        if (nextLabel.isNotEmpty() && left in 1L..200L) {
+            b.text = "⏭  الحلقة التالية $nextLabel · ${fmt(len - mp.time)}"
+            if (b.visibility != View.VISIBLE) b.visibility = View.VISIBLE
+        } else if (b.visibility != View.GONE) b.visibility = View.GONE
+    }
+
+    private fun goNext() {
+        nextBtn?.visibility = View.GONE
+        nextLabel = ""
+        // الأول نطلب الحلقة التالية، وبعدين نبلّغ إن دي خلصت (عشان تتحفظ كمشاهَدة)
+        MainActivity.inst?.web?.evaluateJavascript("window.nativeNext&&nativeNext()", null)
+        report(true)
+        skipStopReport = true
+        finish()
     }
 
     // ================= إظهار/إخفاء الواجهة =================
@@ -644,7 +697,7 @@ class PlayerActivity : AppCompatActivity() {
         h.removeCallbacks(tick)
         h.removeCallbacks(hideRun)
         panel?.dismiss()
-        report(false)
+        if (!skipStopReport) report(false)
         try {
             val url = intent.getStringExtra("url") ?: ""
             val len = mp.length / 1000
@@ -661,6 +714,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (inst === this) inst = null
         mp.release()
         vlc.release()
         try { pfd?.close() } catch (_: Throwable) {}

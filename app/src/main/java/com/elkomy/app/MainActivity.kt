@@ -42,6 +42,9 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this@MainActivity, PlayerActivity::class.java)
                 .putExtra("url", url).putExtra("title", title).putExtra("start", startSec))
         }
+        /** بيعرض زرار «الحلقة التالية» + عدّاد في آخر 200 ثانية جوه المشغّل الداخلي */
+        @JavascriptInterface
+        fun showNext(label: String, left: Int) = runOnUiThread { PlayerActivity.inst?.setNext(label) }
         /** بيضيف الملف في طابور التحميل (ملف ورا ملف تلقائي) */
         @JavascriptInterface
         fun download(url: String, name: String) = runOnUiThread { dl(url, name) }
