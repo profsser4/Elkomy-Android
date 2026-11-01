@@ -446,6 +446,11 @@ class PlayerActivity : AppCompatActivity() {
     // ================= الحلقة التالية =================
     /** الصفحة بتنادي عليها (AndroidPlayer.showNext) لما يبقى فيه حلقة تالية؛ العدّاد بيتحسب هنا */
     fun setNext(label: String) {
+        // لو الصفحة بعتت سبب بدل رقم (بيبدأ بـ !) نعرضه كرسالة بدل ما نفتح الزرار
+        if (label.startsWith("!")) {
+            Toast.makeText(this, label.substring(1), Toast.LENGTH_LONG).show()
+            return
+        }
         nextLabel = label
         updateNext()
     }
