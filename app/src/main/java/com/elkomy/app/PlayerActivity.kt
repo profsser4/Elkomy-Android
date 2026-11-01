@@ -132,9 +132,26 @@ class PlayerActivity : AppCompatActivity() {
 
     // زرار «الحلقة التالية»: ثابت في الشريط السفلي (برقم الحلقة) + زرار كبير بعدّاد في آخر 250 ثانية
     private var nextLabel = ""
-    private var nextBtn: TextView? = null
+    private var nextBtn: LinearLayout? = null
+    private var nextLbl: TextView? = null
+    private var nextTime: TextView? = null
     private var nextItem: LinearLayout? = null
     private var skipStopReport = false
+
+    // الانتقال للحلقة التالية من غير ما نقفل المشغّل (زي نتفلكس)
+    @Volatile var autoNext = true
+    private var waiting = false       // مستني الصفحة تجيب رابط الحلقة التالية
+    private var swapping = false      // الحلقة الجديدة اتحمّلت ومستنيين أول إطار
+    private var curUrl = ""
+    private var tvTitle: TextView? = null
+    private var waitLayer: LinearLayout? = null
+    private var waitText: TextView? = null
+    private val waitTimeout = Runnable {
+        if (waiting) {
+            Toast.makeText(this, "تعذّر تجهيز الحلقة التالية", Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
 
     private val RED = 0xFFE50914.toInt()
 
@@ -142,6 +159,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private val tick = object : Runnable {
         override fun run() {
+            if (waiting) { h.postDelayed(this, 500); return }
             if (++n % 20 == 0) report(false)
             val len = mp.length
             if (!dragging && len > 0) {
@@ -246,8 +264,18 @@ class PlayerActivity : AppCompatActivity() {
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
-                MediaPlayer.Event.EndReached -> { report(true); finish() }
+                MediaPlayer.Event.EndReached -> {
+                    if (!waiting) {
+                        report(true)
+                        if (nextLabel.isNotEmpty() && autoNext) beginWait(nextLabel) else finish()
+                    }
+                }
                 MediaPlayer.Event.Playing -> {
+                    if (swapping) {
+                        swapping = false
+                        waitLayer?.visibility = View.GONE
+                        showUi()
+                    }
                     spinner.visibility = View.GONE
                     playBtn.setKind(IconView.PAUSE)
                     scheduleHide()
@@ -263,6 +291,8 @@ class PlayerActivity : AppCompatActivity() {
                 MediaPlayer.Event.Buffering -> spinner.visibility = if (ev.buffering < 100f) View.VISIBLE else View.GONE
                 MediaPlayer.Event.EncounteredError -> {
                     spinner.visibility = View.GONE
+                    swapping = false
+                    waitLayer?.visibility = View.GONE
                     Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
                 }
                 else -> {}
@@ -334,6 +364,7 @@ class PlayerActivity : AppCompatActivity() {
             setPadding(dp(24), dp(14), dp(24), dp(34))
             addView(back, LinearLayout.LayoutParams(dp(40), dp(40)))
             addView(TextView(this@PlayerActivity).apply {
+                tvTitle = this
                 text = titleText
                 setTextColor(Color.WHITE)
                 textSize = 18f
@@ -422,23 +453,55 @@ class PlayerActivity : AppCompatActivity() {
 
         root.addView(ui, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- زرار الحلقة التالية الكبير: فوق كل حاجة، مخفي لحد آخر 250 ثانية
-        nextBtn = TextView(this).apply {
-            setTextColor(Color.BLACK)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(20), dp(12), dp(20), dp(12))
-            elevation = dp(8).toFloat()
-            background = round(Color.WHITE, 6)
+        // ---- زرار الحلقة التالية: صغير وشفاف على الشمال تحت الفيديو، مخفي لحد آخر 250 ثانية
+        val nIcon = IconView(this, IconView.PLAY)
+        val nTitle = TextView(this).apply {
+            text = "الحلقة التالية"
+            setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+        }
+        nextLbl = TextView(this).apply { setTextColor(0xFFB3B3B3.toInt()); textSize = 12f }
+        nextTime = TextView(this).apply { setTextColor(0xFFB3B3B3.toInt()); textSize = 12f }
+        val nb = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(12), dp(7), dp(14), dp(7))
+            background = GradientDrawable().apply {
+                setColor(0xCC141414.toInt()); cornerRadius = dp(6).toFloat(); setStroke(dp(1), 0x66FFFFFF)
+            }
             visibility = View.GONE
             isClickable = true
             isFocusable = true
+            addView(nIcon, LinearLayout.LayoutParams(dp(18), dp(18)))
+            addView(nTitle, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+            addView(nextLbl, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+            addView(nextTime, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
             setOnClickListener { goNext() }
             focusScale(this)
         }
-        root.addView(nextBtn, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            marginEnd = dp(28); bottomMargin = dp(128)
+        nextBtn = nb
+        root.addView(nb, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+            marginEnd = dp(28); bottomMargin = dp(112)
         })
+
+        // ---- شاشة «جاري تجهيز الحلقة التالية»: بتغطي كل حاجة لحد ما الحلقة الجديدة تشتغل
+        waitText = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        waitLayer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xE6000000.toInt())
+            visibility = View.GONE
+            isClickable = true
+            addView(ProgressBar(this@PlayerActivity).apply {
+                isIndeterminate = true
+                indeterminateTintList = ColorStateList.valueOf(RED)
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            addView(waitText, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
+        }
+        root.addView(waitLayer, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
         showUi()
     }
@@ -457,7 +520,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun updateNext() {
         val b = nextBtn ?: return
-        if (isDestroyed || isFinishing) return
+        if (isDestroyed || isFinishing || waiting || swapping) return
         val len = mp.length
         val left = if (len > 0) (len - mp.time) / 1000 else -1L
         // الزرار الثابت في الشريط السفلي: بيظهر طول ما فيه حلقة تالية معروفة
@@ -469,19 +532,57 @@ class PlayerActivity : AppCompatActivity() {
         }
         // الزرار الكبير بالعدّاد: آخر 250 ثانية، فوق الواجهة (ظاهر حتى لو الأزرار مخفية)
         if (nextLabel.isNotEmpty() && left in 1L..250L) {
-            b.text = "⏭  الحلقة التالية $nextLabel · ${fmt(len - mp.time)}"
+            nextLbl?.text = nextLabel
+            nextTime?.text = "· " + fmt(len - mp.time)
             if (b.visibility != View.VISIBLE) b.visibility = View.VISIBLE
         } else if (b.visibility != View.GONE) b.visibility = View.GONE
     }
 
     private fun goNext() {
+        val lbl = nextLabel
         nextBtn?.visibility = View.GONE
         nextLabel = ""
-        // الأول نطلب الحلقة التالية، وبعدين نبلّغ إن دي خلصت (عشان تتحفظ كمشاهَدة)
+        // نطلب الحلقة التالية من الصفحة، وبعدين نبلّغ إن دي خلصت (عشان تتحفظ كمشاهَدة)، ونفضل في المشغّل
         MainActivity.inst?.web?.evaluateJavascript("window.nativeNext&&nativeNext()", null)
         report(true)
-        skipStopReport = true
-        finish()
+        beginWait(lbl)
+    }
+
+    /** بنفضل في المشغّل ونعرض «جاري التجهيز» لحد ما الصفحة تبعت رابط الحلقة الجديدة (swapTo) */
+    private fun beginWait(label: String) {
+        waiting = true
+        h.removeCallbacks(hideRun)
+        try { mp.pause() } catch (_: Throwable) {}
+        panel?.dismiss()
+        nextBtn?.visibility = View.GONE
+        ui.animate().cancel(); ui.alpha = 0f; ui.visibility = View.GONE; uiShown = false
+        waitText?.text = if (label.isNotEmpty()) "الحلقة التالية $label\nجاري التجهيز..." else "جاري تجهيز الحلقة التالية..."
+        waitLayer?.visibility = View.VISIBLE
+        h.removeCallbacks(waitTimeout)
+        h.postDelayed(waitTimeout, 60000)
+    }
+
+    fun isWaitingNext() = waiting
+
+    /** MainActivity بينادي عليها لما الصفحة تجيب رابط الحلقة التالية والمشغّل لسه مفتوح */
+    fun swapTo(url: String, raw: String, startSec: Int) {
+        h.removeCallbacks(waitTimeout)
+        sub = raw.substringAfter("\n@@SUB@@", "")
+        titleText = raw.substringBefore("\n@@SUB@@")
+        tvTitle?.text = titleText
+        subAdded = false
+        n = 0
+        nextLabel = ""
+        skipStopReport = false
+        waiting = false
+        swapping = true
+        seek.progress = 0
+        tvRemain.text = "00:00"
+        try { pfd?.close() } catch (_: Throwable) {}
+        pfd = null
+        curUrl = url
+        loadMedia(url, startSec)
+        mp.play()
     }
 
     // ================= إظهار/إخفاء الواجهة =================
@@ -687,26 +788,31 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ================= دورة الحياة =================
+    private fun loadMedia(url: String, startIntent: Int) {
+        val u = Uri.parse(url)
+        val m = if (u.scheme == "content") {
+            val fd = try { contentResolver.openFileDescriptor(u, "r") } catch (_: Throwable) { null }
+            pfd = fd
+            if (fd != null) Media(vlc, fd.fileDescriptor) else Media(vlc, u)
+        } else Media(vlc, u)
+        m.setHWDecoderEnabled(true, false)
+        val local = u.scheme == "content" || u.scheme == "file"
+        var st = startIntent
+        if (st <= 0 && local) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
+        if (st > 5) m.addOption(":start-time=$st")
+        if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000") }
+        mp.media = m
+        m.release()
+    }
+
     override fun onStart() {
         super.onStart()
         mp.attachViews(video, null, false, false)
         if (!started) {
             started = true
             val url = intent.getStringExtra("url") ?: return finish()
-            val u = Uri.parse(url)
-            val m = if (u.scheme == "content") {
-                val fd = try { contentResolver.openFileDescriptor(u, "r") } catch (_: Throwable) { null }
-                pfd = fd
-                if (fd != null) Media(vlc, fd.fileDescriptor) else Media(vlc, u)
-            } else Media(vlc, u)
-            m.setHWDecoderEnabled(true, false)
-            val local = u.scheme == "content" || u.scheme == "file"
-            var st = intent.getIntExtra("start", 0)
-            if (st <= 0 && local) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
-            if (st > 5) m.addOption(":start-time=$st")
-            if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000") }
-            mp.media = m
-            m.release()
+            curUrl = url
+            loadMedia(url, intent.getIntExtra("start", 0))
         }
         mp.play()
         h.post(tick)
@@ -717,9 +823,9 @@ class PlayerActivity : AppCompatActivity() {
         h.removeCallbacks(tick)
         h.removeCallbacks(hideRun)
         panel?.dismiss()
-        if (!skipStopReport) report(false)
+        if (!skipStopReport && !waiting) report(false)
         try {
-            val url = intent.getStringExtra("url") ?: ""
+            val url = curUrl
             val len = mp.length / 1000
             if ((url.startsWith("content:") || url.startsWith("file:")) && len > 0) {
                 val pos = mp.time / 1000
@@ -734,6 +840,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        h.removeCallbacks(waitTimeout)
         if (inst === this) inst = null
         mp.release()
         vlc.release()

@@ -39,12 +39,18 @@ class MainActivity : AppCompatActivity() {
     inner class Bridge {
         @JavascriptInterface
         fun play(url: String, title: String, startSec: Int) = runOnUiThread {
+            // لو المشغّل مفتوح ومستني الحلقة التالية: نكمّل فيه من غير ما نفتح شاشة جديدة
+            val pa = PlayerActivity.inst
+            if (pa != null && pa.isWaitingNext()) { pa.swapTo(url, title, startSec); return@runOnUiThread }
             startActivity(Intent(this@MainActivity, PlayerActivity::class.java)
                 .putExtra("url", url).putExtra("title", title).putExtra("start", startSec))
         }
-        /** بيعرض زرار «الحلقة التالية» + عدّاد في آخر 200 ثانية جوه المشغّل الداخلي */
+        /** بيعرض زرار «الحلقة التالية» + عدّاد في آخر 250 ثانية جوه المشغّل الداخلي */
         @JavascriptInterface
         fun showNext(label: String, left: Int) = runOnUiThread { PlayerActivity.inst?.setNext(label) }
+        /** الصفحة بتبلّغ المشغّل هل التشغيل التلقائي للحلقة التالية شغّال */
+        @JavascriptInterface
+        fun setAutoNext(on: Boolean) = runOnUiThread { PlayerActivity.inst?.autoNext = on }
         /** بيضيف الملف في طابور التحميل (ملف ورا ملف تلقائي) */
         @JavascriptInterface
         fun download(url: String, name: String) = runOnUiThread { dl(url, name) }
