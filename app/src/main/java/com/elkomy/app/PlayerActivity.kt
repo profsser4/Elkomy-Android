@@ -130,9 +130,10 @@ class PlayerActivity : AppCompatActivity() {
     private var lastDir = 0
     private val ripHide = arrayOfNulls<Runnable>(2)
 
-    // زرار «الحلقة التالية» (بيظهر في آخر 200 ثانية بعدّاد)
+    // زرار «الحلقة التالية»: ثابت في الشريط السفلي (برقم الحلقة) + زرار كبير بعدّاد في آخر 250 ثانية
     private var nextLabel = ""
     private var nextBtn: TextView? = null
+    private var nextItem: LinearLayout? = null
     private var skipStopReport = false
 
     private val RED = 0xFFE50914.toInt()
@@ -402,6 +403,11 @@ class PlayerActivity : AppCompatActivity() {
             addView(speedItem)
             addView(labeled(IconView.ZOOM, "ملء الشاشة") { toggleZoom() })
             addView(labeled(IconView.SUBS, "الصوت والترجمة") { openTracks() })
+            // زرار ثابت للحلقة التالية (بيظهر أول ما الصفحة تبلّغ برقمها)
+            val ni = labeled(IconView.PLAY, "الحلقة التالية") { goNext() }
+            ni.visibility = View.GONE
+            nextItem = ni
+            addView(ni)
         }
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -416,12 +422,13 @@ class PlayerActivity : AppCompatActivity() {
 
         root.addView(ui, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- زرار الحلقة التالية: فوق كل حاجة، مخفي لحد آخر 200 ثانية
+        // ---- زرار الحلقة التالية الكبير: فوق كل حاجة، مخفي لحد آخر 250 ثانية
         nextBtn = TextView(this).apply {
             setTextColor(Color.BLACK)
-            textSize = 15f
+            textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(18), dp(10), dp(18), dp(10))
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            elevation = dp(8).toFloat()
             background = round(Color.WHITE, 6)
             visibility = View.GONE
             isClickable = true
@@ -430,7 +437,7 @@ class PlayerActivity : AppCompatActivity() {
             focusScale(this)
         }
         root.addView(nextBtn, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            marginEnd = dp(28); bottomMargin = dp(118)
+            marginEnd = dp(28); bottomMargin = dp(128)
         })
         setContentView(root)
         showUi()
@@ -448,7 +455,15 @@ class PlayerActivity : AppCompatActivity() {
         if (isDestroyed || isFinishing) return
         val len = mp.length
         val left = if (len > 0) (len - mp.time) / 1000 else -1L
-        if (nextLabel.isNotEmpty() && left in 1L..200L) {
+        // الزرار الثابت في الشريط السفلي: بيظهر طول ما فيه حلقة تالية معروفة
+        nextItem?.let { ni ->
+            if (nextLabel.isNotEmpty()) {
+                (ni.getChildAt(1) as TextView).text = "الحلقة التالية $nextLabel"
+                if (ni.visibility != View.VISIBLE) ni.visibility = View.VISIBLE
+            } else if (ni.visibility != View.GONE) ni.visibility = View.GONE
+        }
+        // الزرار الكبير بالعدّاد: آخر 250 ثانية، فوق الواجهة (ظاهر حتى لو الأزرار مخفية)
+        if (nextLabel.isNotEmpty() && left in 1L..250L) {
             b.text = "⏭  الحلقة التالية $nextLabel · ${fmt(len - mp.time)}"
             if (b.visibility != View.VISIBLE) b.visibility = View.VISIBLE
         } else if (b.visibility != View.GONE) b.visibility = View.GONE
