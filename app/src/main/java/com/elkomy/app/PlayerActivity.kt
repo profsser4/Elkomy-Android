@@ -138,6 +138,13 @@ class PlayerActivity : AppCompatActivity() {
     private var nextItem: LinearLayout? = null
     private var skipStopReport = false
 
+    // قايمة تشغيل محلية (حلقات اتحمّلت): لما الحلقة تخلص بتفتح اللي بعدها لوحدها
+    private var plUrls: Array<String> = emptyArray()
+    private var plTitles: Array<String> = emptyArray()
+    private var plIdx = -1
+    private fun hasLocalNext() = plIdx >= 0 && plIdx + 1 < plUrls.size
+    private fun plLabel(i: Int) = plTitles.getOrNull(i)?.substringBefore(" · ") ?: ""
+
     // الانتقال للحلقة التالية من غير ما نقفل المشغّل (زي نتفلكس)
     @Volatile var autoNext = true
     private var waiting = false       // مستني الصفحة تجيب رابط الحلقة التالية
@@ -260,12 +267,17 @@ class PlayerActivity : AppCompatActivity() {
         val raw = intent.getStringExtra("title") ?: ""
         sub = raw.substringAfter("\n@@SUB@@", "")
         titleText = raw.substringBefore("\n@@SUB@@")
+        plUrls = intent.getStringArrayExtra("pl_urls") ?: emptyArray()
+        plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
+        plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
+        if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
         vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500"))
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
                 MediaPlayer.Event.EndReached -> {
                     if (!waiting) {
+                        if (hasLocalNext() && autoNext) { h.post { playLocalNext() }; return@setEventListener }
                         report(true)
                         if (nextLabel.isNotEmpty() && autoNext) beginWait(nextLabel) else finish()
                     }
@@ -538,7 +550,29 @@ class PlayerActivity : AppCompatActivity() {
         } else if (b.visibility != View.GONE) b.visibility = View.GONE
     }
 
+    /** الحلقة التالية المتحمّلة على الجهاز: بتشتغل فورًا من غير ما نرجع للصفحة */
+    private fun playLocalNext() {
+        if (!hasLocalNext() || isDestroyed || isFinishing) return
+        try { getSharedPreferences("pos", MODE_PRIVATE).edit().remove("p:$curUrl").apply() } catch (_: Throwable) {}
+        plIdx++
+        titleText = plTitles[plIdx]
+        tvTitle?.text = titleText
+        sub = ""; subAdded = false; n = 0
+        nextBtn?.visibility = View.GONE
+        nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
+        seek.progress = 0
+        tvRemain.text = "00:00"
+        try { pfd?.close() } catch (_: Throwable) {}
+        pfd = null
+        curUrl = plUrls[plIdx]
+        loadMedia(curUrl, 0)
+        mp.play()
+        Toast.makeText(this, "▶ " + titleText, Toast.LENGTH_SHORT).show()
+        showUi()
+    }
+
     private fun goNext() {
+        if (hasLocalNext()) { playLocalNext(); return }
         val lbl = nextLabel
         nextBtn?.visibility = View.GONE
         nextLabel = ""

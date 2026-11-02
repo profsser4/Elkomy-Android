@@ -223,8 +223,8 @@ class MainActivity : AppCompatActivity() {
             val before = DownloadQueue.items.count {
                 it.state == DownloadQueue.State.QUEUED || it.state == DownloadQueue.State.RUNNING
             }
-            DownloadQueue.enqueue(this, url, n, src)
-            val tag = dlEp(n)?.let { " · الحلقة ${it.second}" } ?: ""
+            val q = DownloadQueue.enqueue(this, url, n, src)
+            val tag = dlEpOf(q)?.let { e -> " · الحلقة ${e.second}" } ?: ""
             Toast.makeText(
                 this,
                 if (before == 0) "بدأ التحميل ⬇$tag (تابعه من زرار التحميلات)" else "اتضاف للطابور$tag · رقم ${before + 1}",

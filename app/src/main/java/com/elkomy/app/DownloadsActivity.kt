@@ -10,6 +10,7 @@ import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -87,6 +88,8 @@ class DownloadsActivity : AppCompatActivity() {
     private class Row(val head: String?, val color: Int, val item: DownloadQueue.Item?)
 
     private var rows: List<Row> = emptyList()
+    private var filter = 0   // 0 الكل · 1 جاري/منتظر · 2 خلص · 3 فشل
+    private val fchips = ArrayList<TextView>()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -134,21 +137,70 @@ class DownloadsActivity : AppCompatActivity() {
 
     /** اسم قصير للتحميل: "الحلقة 5" لو مسلسل، وإلا الاسم نفسه */
     private fun label(item: DownloadQueue.Item): String {
-        val ep = dlEp(item.name)
+        val ep = dlEpOf(item)
         return if (ep != null) "الحلقة ${ep.second}" + (if (ep.first > 1) " (موسم ${ep.first})" else "") else dlTitle(item.name)
     }
 
     /** لو في تحميلات قديمة بنفس الاسم من غير رقم حلقة: بنرقّمها عشان تتفرّق */
     private fun dupIndex(item: DownloadQueue.Item): Int {
-        if (dlEp(item.name) != null) return 0
+        if (dlEpOf(item) != null) return 0
         val same = DownloadQueue.items.filter { it.name == item.name }.sortedBy { it.id }
         return if (same.size > 1) same.indexOf(item) + 1 else 0
+    }
+
+    private fun playItem(item: DownloadQueue.Item) {
+        val u = item.uri ?: return
+        val i = Intent(this, PlayerActivity::class.java).putExtra("url", u).putExtra("title", dlShortI(item))
+        // قايمة تشغيل: كل حلقات نفس المسلسل المتحمّلة بالترتيب، عشان الحلقة التالية تشتغل لوحدها
+        val ep = dlEpOf(item)
+        if (ep != null) {
+            val t = dlTitle(item.name)
+            val l = DownloadQueue.items.filter { it.state == State.DONE && it.uri != null && dlEpOf(it) != null && dlTitle(it.name) == t }
+                .sortedWith(compareBy({ dlEpOf(it)!!.first }, { dlEpOf(it)!!.second }))
+            val idx = l.indexOf(item)
+            if (idx >= 0 && idx + 1 < l.size) {
+                i.putExtra("pl_urls", l.map { it.uri!! }.toTypedArray())
+                i.putExtra("pl_titles", l.map { dlShortI(it) }.toTypedArray())
+                i.putExtra("pl_idx", idx)
+            }
+        }
+        startActivity(i)
+    }
+
+    /** فتح الملف ببرنامج تاني (VLC / MX ...) — بيشتغل مع ملفات المخزن العام */
+    private fun openWith(item: DownloadQueue.Item) {
+        val u = item.uri ?: return
+        try {
+            val i = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(u), "video/*")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(i, dlShortI(item)))
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, "مفيش برنامج يفتح الملف ده", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** الحلقة التالية لو هي كمان متحمّلة (نفس المسلسل: الحلقة+1 أو أول حلقة في الموسم التالي) */
+    private fun nextDone(item: DownloadQueue.Item): DownloadQueue.Item? {
+        val e = dlEpOf(item) ?: return null
+        val t = dlTitle(item.name)
+        val done = DownloadQueue.items.filter { it.state == State.DONE && dlEpOf(it) != null && dlTitle(it.name) == t }
+        return done.firstOrNull { dlEpOf(it)!!.first == e.first && dlEpOf(it)!!.second == e.second + 1 }
+            ?: done.firstOrNull { dlEpOf(it)!!.first == e.first + 1 && dlEpOf(it)!!.second == 1 }
+    }
+
+    private fun pill(ctx: Context, color: Int) = txt(ctx, 13f, color, true).apply {
+        gravity = Gravity.CENTER
+        setPadding(dp(8), dp(9), dp(8), dp(9))
+        background = round((color and 0x00FFFFFF) or 0x26000000, 12)
+        isClickable = true
+        isFocusable = true
     }
 
     inner class Holder(ctx: Context) {
         val root = LinearLayout(ctx)
         val chipEp = chip(ctx)
         val chipSt = chip(ctx)
+        val chipQ = chip(ctx)
         val name = txt(ctx, 14f, Color.WHITE, true)
         val pct = txt(ctx, 22f, BLUE, true)
         val info = txt(ctx, 12f, GRAY)
@@ -158,6 +210,11 @@ class DownloadsActivity : AppCompatActivity() {
         val fg: GradientDrawable
         val seg = SegBar(ctx)
         val detail = txt(ctx, 11f, GRAY)
+        val full = txt(ctx, 11f, GRAY)
+        val btns = LinearLayout(ctx)
+        val b1 = pill(ctx, GREEN)
+        val b2 = pill(ctx, BLUE)
+        val b3 = pill(ctx, RED)
 
         init {
             val (b, f) = makeBar(ctx, 8)
@@ -170,6 +227,7 @@ class DownloadsActivity : AppCompatActivity() {
             val r0 = LinearLayout(ctx).apply { gravity = Gravity.CENTER_VERTICAL }
             r0.addView(chipEp)
             r0.addView(chipSt, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
+            r0.addView(chipQ, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
             root.addView(r0)
 
             // الصف الثاني: الاسم + الأزرار
@@ -194,13 +252,24 @@ class DownloadsActivity : AppCompatActivity() {
             root.addView(r3, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
             root.addView(seg, LinearLayout.LayoutParams(-1, dp(10)).apply { topMargin = dp(6) })
             root.addView(detail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+            full.maxLines = 2
+            full.ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            root.addView(full, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+            btns.orientation = LinearLayout.HORIZONTAL
+            for (x in arrayOf(b1, b2, b3)) btns.addView(x, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+            root.addView(btns, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             root.tag = this
         }
 
         fun bind(item: DownloadQueue.Item) {
             name.text = dlTitle(item.name)
             val dup = dupIndex(item)
-            setChip(chipEp, dlEpLabel(item.name) ?: if (dup > 0) "ملف رقم $dup" else null, VIOLET)
+            setChip(chipEp, dlEpLabelOf(item) ?: if (dup > 0) "ملف رقم $dup" else null, VIOLET)
+            setChip(chipQ, dlQuality(item.name) ?: dlQuality(item.fname), AMBER)
+            // الاسم الكامل للملف الأصلي — عشان تعرف بالظبط إيه اللي اتحمّل
+            val raw = item.fname.ifEmpty { item.name }
+            if (raw != name.text.toString()) { full.visibility = View.VISIBLE; full.text = "📄 $raw" } else full.visibility = View.GONE
+            btns.visibility = View.GONE
             val total = item.total
             val done = item.done
             a2.visibility = View.GONE
@@ -250,22 +319,32 @@ class DownloadsActivity : AppCompatActivity() {
                     setChip(chipSt, "✓ اكتمل", GREEN)
                     pct.text = "✓"
                     pct.setTextColor(GREEN)
-                    info.text = "اكتمل · ${dlSize(item.done)}"
-                    a1.text = "▶"
-                    a1.setOnClickListener {
-                        val u = item.uri ?: return@setOnClickListener
-                        startActivity(Intent(this@DownloadsActivity, PlayerActivity::class.java)
-                            .putExtra("url", u).putExtra("title", dlShort(item.name)))
+                    info.text = "اكتمل · ${dlSize(item.done)}" + (if (item.fin > 0) " · ${dlAgo(item.fin)}" else "")
+                    a1.visibility = View.GONE
+                    btns.visibility = View.VISIBLE
+                    b1.text = "▶ تشغيل"
+                    b1.setOnClickListener { playItem(item) }
+                    val nx = nextDone(item)
+                    if (nx != null) {
+                        b2.text = "⏭ الحلقة ${dlEpOf(nx)!!.second}"
+                        b2.setOnClickListener { playItem(nx) }
+                    } else if (item.uri?.startsWith("file:") != true) {
+                        b2.text = "📂 فتح بـ..."
+                        b2.setOnClickListener { openWith(item) }
+                    } else {
+                        b2.text = "ℹ التفاصيل"
+                        b2.setOnClickListener { details(item) }
                     }
-                    a2.visibility = View.VISIBLE
-                    a2.text = "🗑"
-                    a2.setOnClickListener {
-                        android.app.AlertDialog.Builder(this@DownloadsActivity).setTitle(dlShort(item.name))
+                    b3.text = "🗑 حذف"
+                    b3.setOnClickListener {
+                        android.app.AlertDialog.Builder(this@DownloadsActivity).setTitle(dlShortI(item))
                             .setItems(arrayOf("حذف من القايمة فقط", "حذف الملف من الجهاز")) { _, w ->
                                 if (w == 1) DownloadQueue.deleteFile(this@DownloadsActivity, item) else DownloadQueue.remove(item)
                                 refresh()
                             }.setNegativeButton("إلغاء", null).show()
                     }
+                    detail.visibility = View.VISIBLE
+                    detail.text = "📁 Download/Elkomy"
                 }
                 State.FAILED, State.CANCELED -> {
                     val resumable = item.state == State.FAILED && DownloadQueue.canResume(item)
@@ -293,6 +372,12 @@ class DownloadsActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun details(item: DownloadQueue.Item) {
+        android.app.AlertDialog.Builder(this).setTitle(dlShortI(item))
+            .setMessage("الاسم: ${item.fname.ifEmpty { item.name }}\nالحجم: ${dlSize(item.done)}\nالمكان: ${item.uri ?: "-"}")
+            .setPositiveButton("تمام", null).show()
     }
 
     private val adapter = object : BaseAdapter() {
@@ -389,6 +474,21 @@ class DownloadsActivity : AppCompatActivity() {
             setMargins(dp(14), dp(8), dp(14), dp(10))
         })
 
+        // فلتر: الكل / جاري / خلص / فشل
+        val fbar = LinearLayout(ctx).apply { setPadding(dp(10), 0, dp(10), dp(8)) }
+        val fnames = arrayOf("الكل", "⬇ جاري", "✓ خلص", "⚠ فشل")
+        for (k in fnames.indices) {
+            val c = txt(ctx, 13f, GRAY, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(6), dp(8), dp(6), dp(8))
+                isClickable = true; isFocusable = true
+                setOnClickListener { filter = k; refresh() }
+            }
+            fchips.add(c)
+            fbar.addView(c, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
+        }
+        root.addView(fbar)
+
         empty = txt(ctx, 15f, GRAY).apply {
             text = "مفيش تحميلات دلوقتي.\nدوس ⬇ تحميل على أي فيلم أو حلقة."
             gravity = Gravity.CENTER
@@ -422,23 +522,39 @@ class DownloadsActivity : AppCompatActivity() {
             }.setNegativeButton("إلغاء", null).show()
     }
 
-    /** بيرتّب القايمة في أقسام: الجاري ← في الانتظار ← فشل ← اكتمل */
+    /** بيرتّب القايمة في أقسام: الجاري ← في الانتظار ← فشل ← اكتمل (والمكتمل متجمّع بالمسلسل ومرتّب بالحلقات) */
     private fun buildRows(): List<Row> {
         val all = DownloadQueue.items.toList()
         val run = all.filter { it.state == State.RUNNING }
         val que = all.filter { it.state == State.QUEUED }
         val bad = all.filter { it.state == State.FAILED || it.state == State.CANCELED }
-        val ok = all.filter { it.state == State.DONE }.sortedByDescending { it.id }
+        val ok = all.filter { it.state == State.DONE }
         val out = ArrayList<Row>()
         fun sec(title: String, color: Int, l: List<DownloadQueue.Item>) {
             if (l.isEmpty()) return
             out.add(Row("$title  (${l.size})", color, null))
             l.forEach { out.add(Row(null, 0, it)) }
         }
-        sec("⬇ بيتحمّل دلوقتي", BLUE, run)
-        sec("⏳ في الانتظار — بالترتيب", GRAY, que)
-        sec("⚠ فشلت أو اتلغت", AMBER, bad)
-        sec("✓ اكتملت", GREEN, ok)
+        if (filter == 0 || filter == 1) {
+            sec("⬇ بيتحمّل دلوقتي", BLUE, run)
+            sec("⏳ في الانتظار — بالترتيب", GRAY, que)
+        }
+        if (filter == 0 || filter == 3) sec("⚠ فشلت أو اتلغت", AMBER, bad)
+        if (filter == 0 || filter == 2) {
+            if (ok.isNotEmpty()) {
+                out.add(Row("✓ اكتملت  (${ok.size})", GREEN, null))
+                val eps = ok.filter { dlEpOf(it) != null }.groupBy { dlTitle(it.name) }
+                eps.entries.sortedByDescending { e -> e.value.maxOf { it.id } }.forEach { (t, l) ->
+                    out.add(Row("📺 $t · ${l.size} حلقة", VIOLET, null))
+                    l.sortedWith(compareBy({ dlEpOf(it)!!.first }, { dlEpOf(it)!!.second })).forEach { out.add(Row(null, 0, it)) }
+                }
+                val mv = ok.filter { dlEpOf(it) == null }.sortedByDescending { it.id }
+                if (mv.isNotEmpty()) {
+                    if (eps.isNotEmpty()) out.add(Row("🎬 أفلام وملفات أخرى · ${mv.size}", VIOLET, null))
+                    mv.forEach { out.add(Row(null, 0, it)) }
+                }
+            }
+        }
         return out
     }
 
@@ -446,7 +562,19 @@ class DownloadsActivity : AppCompatActivity() {
         rows = buildRows()
         adapter.notifyDataSetChanged()
         val all = DownloadQueue.items
-        empty.visibility = if (all.isEmpty()) View.VISIBLE else View.GONE
+        val cnt = intArrayOf(all.size,
+            all.count { it.state == State.RUNNING || it.state == State.QUEUED },
+            all.count { it.state == State.DONE },
+            all.count { it.state == State.FAILED || it.state == State.CANCELED })
+        val names = arrayOf("الكل", "⬇ جاري", "✓ خلص", "⚠ فشل")
+        for (k in fchips.indices) {
+            val on = filter == k
+            fchips[k].text = names[k] + " " + cnt[k]
+            fchips[k].setTextColor(if (on) Color.WHITE else GRAY)
+            fchips[k].background = round(if (on) 0xFF334155.toInt() else CARD, 12)
+        }
+        empty.text = if (all.isEmpty()) "مفيش تحميلات دلوقتي.\nدوس ⬇ تحميل على أي فيلم أو حلقة." else "مفيش حاجة في القسم ده."
+        empty.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
         val batch = DownloadQueue.batchItems()
         val n = batch.size
         if (n == 0) {

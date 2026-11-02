@@ -44,32 +44,91 @@ import java.util.concurrent.atomic.AtomicReference
  * الصفحة بتبعت الاسم كده:  "S01E05 - اسم المسلسل [1080p]"
  * والدوال دي بتفصل الرقم عن الاسم عشان الشاشة تعرضه كشارة واضحة.
  */
-private val EP_RE = Regex("(?i)\\bS(\\d{1,2})\\s?E(\\d{1,3})\\b")
+private val EP_SE = listOf(
+    Regex("(?i)\\bS(\\d{1,2})\\s?E(\\d{1,3})\\b"),
+    Regex("(?i)\\b(\\d{1,2})x(\\d{2,3})\\b")
+)
+private val EP_ONLY = listOf(
+    Regex("(?i)\\bEp(?:isode)?[\\s._-]?(\\d{1,3})\\b"),
+    Regex("(?:الحلقة|الحلقه|حلقة|حلقه)\\s*(\\d{1,3})"),
+    Regex("(?i)\\bE(\\d{2,3})\\b")
+)
+private val SEASON_RES = listOf(
+    Regex("(?i)\\bSeason[\\s._-]?(\\d{1,2})\\b"),
+    Regex("(?:الموسم|موسم)\\s*(\\d{1,2})"),
+    Regex("\\[\\s*م\\s*(\\d{1,2})\\s*\\]")
+)
 private val EXT_RE = Regex("(?i)\\.(mkv|mp4|avi|ts|m4v|mov|webm)$")
+private val TECH_RE = Regex("(?i)\\[\\s*(?:\\d{3,4}p|4k|h\\.?26[45]|x26[45]|hevc|web-?dl|web-?rip|blu-?ray)\\s*\\]")
+private val Q_RE = Regex("(?i)\\b(2160p|4k|1080p|720p|480p)\\b")
 
-/** (الموسم، الحلقة) أو null لو فيلم أو الاسم مفيهوش رقم */
+/** (الموسم، الحلقة) أو null لو فيلم أو الاسم مفيهوش رقم — بيفهم S01E05 / 1x05 / Episode 5 / الحلقة 5 / [م1] */
 fun dlEp(name: String): Pair<Int, Int>? {
-    val m = EP_RE.find(name) ?: return null
-    return Pair(m.groupValues[1].toInt(), m.groupValues[2].toInt())
+    for (r in EP_SE) {
+        val m = r.find(name) ?: continue
+        return Pair(m.groupValues[1].toInt(), m.groupValues[2].toInt())
+    }
+    for (r in EP_ONLY) {
+        val m = r.find(name) ?: continue
+        var season = 1
+        for (sr in SEASON_RES) { val sm = sr.find(name); if (sm != null) { season = sm.groupValues[1].toInt(); break } }
+        return Pair(season, m.groupValues[1].toInt())
+    }
+    return null
 }
 
-/** الاسم من غير رقم الحلقة ولا الامتداد */
+/** الجودة (1080p...) أو null */
+fun dlQuality(name: String): String? = Q_RE.find(name)?.value?.uppercase()?.replace("2160P", "4K")
+
+/** الاسم من غير رقم الحلقة ولا الامتداد ولا وسوم الجودة */
 fun dlTitle(name: String): String {
     var s = EXT_RE.replace(name.trim(), "")
-    s = EP_RE.replace(s, " ")
+    val hasEp = dlEp(name) != null
+    for (r in EP_SE) s = r.replace(s, " ")
+    for (r in EP_ONLY) s = r.replace(s, " ")
+    if (hasEp) for (r in SEASON_RES) s = r.replace(s, " ")
+    s = TECH_RE.replace(s, " ")
     s = s.replace(Regex("\\s{2,}"), " ")
     s = s.replace(Regex("^[\\s\\-–·._]+|[\\s\\-–·._]+$"), "")
     return s.ifBlank { name }
 }
 
-/** "الموسم 1 · الحلقة 5" أو null */
-fun dlEpLabel(name: String): String? = dlEp(name)?.let { "الموسم ${it.first} · الحلقة ${it.second}" }
+/** رقم الحلقة للتحميل: من الاسم، وإلا اللي اتعرف من الرابط/اسم الملف الفعلي */
+fun dlEpOf(i: DownloadQueue.Item): Pair<Int, Int>? = dlEp(i.name) ?: i.ep
 
-/** اسم مختصر للإشعارات: "S01E05 · اسم المسلسل" */
-fun dlShort(name: String): String {
-    val ep = dlEp(name) ?: return dlTitle(name)
-    return String.format(java.util.Locale.US, "S%02dE%02d", ep.first, ep.second) + " · " + dlTitle(name)
+/** "الموسم 1 · الحلقة 5" أو null */
+fun dlEpLabelOf(i: DownloadQueue.Item): String? = dlEpOf(i)?.let { "الموسم ${it.first} · الحلقة ${it.second}" }
+
+/** اسم مختصر للإشعارات والمشغّل: "S01E05 · اسم المسلسل" */
+fun dlShortI(i: DownloadQueue.Item): String {
+    val ep = dlEpOf(i) ?: return dlTitle(i.name)
+    return String.format(java.util.Locale.US, "S%02dE%02d", ep.first, ep.second) + " · " + dlTitle(i.name)
 }
+
+/** "منذ ..." للمكتمل */
+fun dlAgo(t: Long): String {
+    if (t <= 0) return ""
+    val s = (System.currentTimeMillis() - t) / 1000
+    return when {
+        s < 60 -> "دلوقتي"
+        s < 3600 -> "من ${s / 60} د"
+        s < 86400 -> "من ${s / 3600} س"
+        else -> "من ${s / 86400} يوم"
+    }
+}
+
+/** اسم الملف الحقيقي من الهيدر أو الرابط */
+private fun dlFileNameOf(c: HttpURLConnection?, url: String): String {
+    try {
+        val cd = c?.getHeaderField("Content-Disposition")
+        if (cd != null) {
+            val m = Regex("filename\\*?=(?:UTF-8'')?\"?([^\";]+)", RegexOption.IGNORE_CASE).find(cd)
+            if (m != null) return Uri.decode(m.groupValues[1].trim())
+        }
+    } catch (_: Throwable) {}
+    return dlUrlName(url)
+}
+private fun dlUrlName(url: String): String = try { Uri.decode(Uri.parse(url).lastPathSegment ?: "") } catch (_: Throwable) { "" }
 
 /**
  * طابور التحميل: ملف ورا ملف تلقائي (واحد بس بيتحمّل في نفس الوقت).
@@ -97,6 +156,10 @@ object DownloadQueue {
         @Volatile var paused = false
         @Volatile var conns = 0
         @Volatile var segs = IntArray(0)
+        @Volatile var ep: Pair<Int, Int>? = null   // الموسم/الحلقة لو اتعرفوا من الرابط أو اسم الملف الحقيقي
+        @Volatile var fname = ""                  // اسم الملف الحقيقي من السيرفر
+        @Volatile var ts = 0L                      // وقت الإضافة
+        @Volatile var fin = 0L                     // وقت الاكتمال
     }
 
     val items = CopyOnWriteArrayList<Item>()
@@ -143,6 +206,8 @@ object DownloadQueue {
                 it.total = o.optLong("total"); it.done = o.optLong("done"); it.acc = it.done
                 it.uri = o.optString("uri").ifEmpty { null }
                 it.src = o.optString("src")
+                it.fname = o.optString("fname"); it.ts = o.optLong("ts"); it.fin = o.optLong("fin")
+                if (o.has("es") && o.has("ee")) it.ep = Pair(o.getInt("es"), o.getInt("ee"))
                 val st = State.valueOf(o.optString("state", "FAILED"))
                 if (st == State.DONE) {
                     if (!exists(a, it.uri)) continue
@@ -190,6 +255,8 @@ object DownloadQueue {
                 arr.put(JSONObject().put("id", it.id).put("url", it.url).put("name", it.name)
                     .put("state", it.state.name).put("total", it.total).put("done", it.done).put("uri", it.uri ?: "")
                     .put("src", it.src).put("part", it.partUri ?: "").put("chunk", it.chunk)
+                    .put("fname", it.fname).put("ts", it.ts).put("fin", it.fin)
+                    .apply { it.ep?.let { e -> put("es", e.first).put("ee", e.second) } }
                     .put("gots", JSONArray((it.gots ?: LongArray(0)).toList())))
             }
             a.getSharedPreferences("dlq", Context.MODE_PRIVATE).edit().putString("items", arr.toString()).apply()
@@ -222,6 +289,8 @@ object DownloadQueue {
             if (!busy()) batch++
             item = Item(seq.getAndIncrement(), url, name, batch)
             item.src = src
+            item.ts = System.currentTimeMillis()
+            item.ep = dlEp(name) ?: dlEp(dlUrlName(url))
             items.add(item)
         }
         save()
@@ -396,6 +465,13 @@ class DownloadService : Service() {
         return s.take(150)
     }
 
+    /** اسم الملف على الجهاز: لو الرقم اتعرف من الرابط بس، بنضيفه في الأول عشان الملفات تتفرق */
+    private fun saveName(item: DownloadQueue.Item): String {
+        val e = item.ep
+        return if (e != null && dlEp(item.name) == null)
+            String.format(java.util.Locale.US, "S%02dE%02d - ", e.first, e.second) + item.name else item.name
+    }
+
     private fun mimeOf(name: String): String {
         val ext = name.substringAfterLast('.', "").lowercase()
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
@@ -568,6 +644,8 @@ class DownloadService : Service() {
             } else {
                 val (c0, fin) = open(item.url, if (want > 1) "bytes=0-0" else null)
                 conn = c0
+                item.fname = dlFileNameOf(c0, fin)
+                if (item.ep == null && dlEp(item.name) == null) item.ep = dlEp(item.fname)
                 var segTotal = -1L
                 if (want > 1 && c0.responseCode == 206) {
                     segTotal = c0.getHeaderField("Content-Range")?.substringAfterLast('/')?.trim()?.toLongOrNull() ?: -1L
@@ -580,7 +658,7 @@ class DownloadService : Service() {
                 }
                 if (segTotal > 0) {
                     item.total = segTotal
-                    val r = openRSink(safeName(item.name), segTotal)
+                    val r = openRSink(safeName(saveName(item)), segTotal)
                     rs = r
                     item.partUri = r.uriString()
                     downloadSegmented(item, fin, segTotal, r, want, 0L, null)
@@ -589,7 +667,7 @@ class DownloadService : Service() {
                 } else {
                     val cc = conn!!
                     item.total = cc.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-                    val sk = openSink(safeName(item.name))
+                    val sk = openSink(safeName(saveName(item)))
                     sink = sk
                     cc.inputStream.use { input ->
                         val buf = ByteArray(64 * 1024)
@@ -617,6 +695,7 @@ class DownloadService : Service() {
             item.speed = 0
             item.conns = 0
             item.note = ""
+            item.fin = System.currentTimeMillis()
             item.state = DownloadQueue.State.DONE
             notifyDone(item)
         } catch (e: Exception) {
@@ -779,7 +858,7 @@ class DownloadService : Service() {
             }
             val pct = if (item.total > 0) (item.done * 100 / item.total).toInt() else 0
             b.setContentTitle(if (n > 1) "تحميل ملف ${minOf(fin + 1, n)} من $n" else "جاري التحميل")
-                .setContentText(dlShort(item.name) + (if (item.total > 0) " · $pct%" else "") +
+                .setContentText(dlShortI(item) + (if (item.total > 0) " · $pct%" else "") +
                     (if (item.paused) " · ⏸ متوقف" else if (item.speed > 0) " · ${dlSize(item.speed)}/s" else ""))
                 .setProgress(100, pct, item.total <= 0)
         }
@@ -799,7 +878,7 @@ class DownloadService : Service() {
             val n = NotificationCompat.Builder(this, CH_DONE)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("اكتمل التحميل ✓")
-                .setContentText(dlShort(item.name))
+                .setContentText(dlShortI(item))
                 .setAutoCancel(true)
                 .setContentIntent(openIntent())
                 .build()
