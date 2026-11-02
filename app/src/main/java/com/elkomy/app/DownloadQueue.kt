@@ -40,6 +40,38 @@ import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReference
 
 /**
+ * ---------- أسماء التحميل: رقم الموسم/الحلقة ----------
+ * الصفحة بتبعت الاسم كده:  "S01E05 - اسم المسلسل [1080p]"
+ * والدوال دي بتفصل الرقم عن الاسم عشان الشاشة تعرضه كشارة واضحة.
+ */
+private val EP_RE = Regex("(?i)\\bS(\\d{1,2})\\s?E(\\d{1,3})\\b")
+private val EXT_RE = Regex("(?i)\\.(mkv|mp4|avi|ts|m4v|mov|webm)$")
+
+/** (الموسم، الحلقة) أو null لو فيلم أو الاسم مفيهوش رقم */
+fun dlEp(name: String): Pair<Int, Int>? {
+    val m = EP_RE.find(name) ?: return null
+    return Pair(m.groupValues[1].toInt(), m.groupValues[2].toInt())
+}
+
+/** الاسم من غير رقم الحلقة ولا الامتداد */
+fun dlTitle(name: String): String {
+    var s = EXT_RE.replace(name.trim(), "")
+    s = EP_RE.replace(s, " ")
+    s = s.replace(Regex("\\s{2,}"), " ")
+    s = s.replace(Regex("^[\\s\\-–·._]+|[\\s\\-–·._]+$"), "")
+    return s.ifBlank { name }
+}
+
+/** "الموسم 1 · الحلقة 5" أو null */
+fun dlEpLabel(name: String): String? = dlEp(name)?.let { "الموسم ${it.first} · الحلقة ${it.second}" }
+
+/** اسم مختصر للإشعارات: "S01E05 · اسم المسلسل" */
+fun dlShort(name: String): String {
+    val ep = dlEp(name) ?: return dlTitle(name)
+    return String.format(java.util.Locale.US, "S%02dE%02d", ep.first, ep.second) + " · " + dlTitle(name)
+}
+
+/**
  * طابور التحميل: ملف ورا ملف تلقائي (واحد بس بيتحمّل في نفس الوقت).
  * الاستخدام من أي مكان:  DownloadQueue.enqueue(context, url, "اسم.mkv")
  */
@@ -181,7 +213,11 @@ object DownloadQueue {
     fun enqueue(ctx: Context, url: String, name: String, src: String = ""): Item {
         val item: Item
         synchronized(this) {
-            val same = items.firstOrNull { it.url == url && (it.state == State.QUEUED || it.state == State.RUNNING) }
+            val ep = dlEp(name)
+            // نفس الرابط، أو نفس الحلقة (نفس الاسم بالرقم) لسه في الطابور: منكرّرهاش
+            val same = items.firstOrNull {
+                (it.state == State.QUEUED || it.state == State.RUNNING) && (it.url == url || (ep != null && it.name == name))
+            }
             if (same != null) return same
             if (!busy()) batch++
             item = Item(seq.getAndIncrement(), url, name, batch)
@@ -258,6 +294,15 @@ object DownloadQueue {
         items.removeAll { it.state == State.CANCELED || (it.state == State.FAILED && it.partUri == null) }   // المكتمل بيفضل عشان تشغّله من التطبيق؛ امسحه بالسلة 🗑
         save()
     }
+
+    /** بيشيل المكتمل من القايمة بس (الملفات نفسها بتفضل في الجهاز) */
+    fun clearDone() {
+        items.removeAll { it.state == State.DONE }
+        save()
+    }
+
+    /** ترتيب الملف في الطابور (1 = اللي جاي بعد الحالي) */
+    fun queuePos(item: Item): Int = items.filter { it.state == State.QUEUED }.indexOf(item) + 1
 
     fun batchItems(): List<Item> = items.filter { it.batch == batch }
 }
@@ -734,7 +779,7 @@ class DownloadService : Service() {
             }
             val pct = if (item.total > 0) (item.done * 100 / item.total).toInt() else 0
             b.setContentTitle(if (n > 1) "تحميل ملف ${minOf(fin + 1, n)} من $n" else "جاري التحميل")
-                .setContentText(item.name + (if (item.total > 0) " · $pct%" else "") +
+                .setContentText(dlShort(item.name) + (if (item.total > 0) " · $pct%" else "") +
                     (if (item.paused) " · ⏸ متوقف" else if (item.speed > 0) " · ${dlSize(item.speed)}/s" else ""))
                 .setProgress(100, pct, item.total <= 0)
         }
@@ -754,7 +799,7 @@ class DownloadService : Service() {
             val n = NotificationCompat.Builder(this, CH_DONE)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("اكتمل التحميل ✓")
-                .setContentText(item.name)
+                .setContentText(dlShort(item.name))
                 .setAutoCancel(true)
                 .setContentIntent(openIntent())
                 .build()
