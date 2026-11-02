@@ -56,6 +56,7 @@ object DownloadQueue {
         @Volatile var note = ""
         @Volatile var state = State.QUEUED
         @Volatile var done = 0L
+        @Volatile var acc = 0L                  // اللي اتحسب في إحصائيات الاستخدام
         @Volatile var total = 0L
         @Volatile var speed = 0L
         @Volatile var error = ""
@@ -67,6 +68,28 @@ object DownloadQueue {
     }
 
     val items = CopyOnWriteArrayList<Item>()
+
+    // ---------- عدّاد التحميل الفعلي (بيتبعت للصفحة وبعدين للسيرفر لإحصائيات العضو) ----------
+    private val pendBytes = AtomicLong(0)
+    @Volatile private var lastFlush = 0L
+
+    /** بيضيف اللي اتحمّل من آخر مرة للعدّاد، وبيبعته للصفحة كل 20 ثانية تقريبًا (أو فورًا لو force) */
+    fun account(item: Item, force: Boolean = false) {
+        val d = item.done - item.acc
+        if (d > 0) pendBytes.addAndGet(d)
+        item.acc = item.done            // لو التحميل بدأ من الأول (done صغير) بنعيد الضبط من غير ما نخصم
+        val now = System.currentTimeMillis()
+        if (force || now - lastFlush > 20_000) flushUsage()
+    }
+
+    fun flushUsage() {
+        lastFlush = System.currentTimeMillis()
+        val n = pendBytes.get()
+        if (n <= 0) return
+        val act = MainActivity.inst ?: return          // الصفحة مش مفتوحة: العدّاد بيفضل محفوظ لحد ما تفتح
+        if (!pendBytes.compareAndSet(n, 0)) return
+        act.runOnUiThread { act.web.evaluateJavascript("window.nativeDlBytes&&nativeDlBytes($n)", null) }
+    }
     private val seq = AtomicLong(1)
     @Volatile private var batch = 0
 
@@ -85,7 +108,7 @@ object DownloadQueue {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val it = Item(o.getLong("id"), o.getString("url"), o.getString("name"), 0)
-                it.total = o.optLong("total"); it.done = o.optLong("done")
+                it.total = o.optLong("total"); it.done = o.optLong("done"); it.acc = it.done
                 it.uri = o.optString("uri").ifEmpty { null }
                 it.src = o.optString("src")
                 val st = State.valueOf(o.optString("state", "FAILED"))
@@ -572,6 +595,7 @@ class DownloadService : Service() {
             }
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}
+            DownloadQueue.account(item, true)
             DownloadQueue.save()
         }
     }
@@ -721,6 +745,7 @@ class DownloadService : Service() {
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastNotify < 800) return
         lastNotify = now
+        DownloadQueue.account(item)
         try { nm().notify(NOTIF_ID, buildNotif(item)) } catch (_: Throwable) {}
     }
 
