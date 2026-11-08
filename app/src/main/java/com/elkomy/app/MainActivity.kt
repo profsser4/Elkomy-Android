@@ -34,6 +34,10 @@ class MainActivity : AppCompatActivity() {
         window.decorView.systemUiVisibility = 0
     }
     override fun onResume() { super.onResume(); UpdateManager.check(this) }
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_LOW) try { web.clearCache(false) } catch (_: Exception) {}
+    }
     private val prefs by lazy { getSharedPreferences("cfg", MODE_PRIVATE) }
 
     inner class Bridge {
@@ -145,10 +149,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(b: Bundle?) {
-        super.onCreate(b)
-        inst = this
-        DownloadQueue.load(this)
+    private fun buildWeb() {
         web = WebView(this)
         setContentView(web)
         web.settings.apply {
@@ -183,6 +184,17 @@ class MainActivity : AppCompatActivity() {
             override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
                 if (r.isForMainFrame) retryDialog()
             }
+            @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
+            override fun onRenderProcessGone(v: WebView, d: RenderProcessGoneDetail): Boolean {
+                // المتصفح الداخلي وقع (غالبًا ذاكرة) — من غير الدالة دي أندرويد كان بيقفل التطبيق كله
+                runOnUiThread {
+                    try { (v.parent as? android.view.ViewGroup)?.removeView(v); v.destroy() } catch (_: Exception) {}
+                    buildWeb()
+                    web.loadUrl(if (bakedOk()) BuildConfig.SERVER_URL else (prefs.getString("url", "") ?: ""))
+                    Toast.makeText(this@MainActivity, "الصفحة وقفت (ذاكرة) واتفتحت تاني", Toast.LENGTH_LONG).show()
+                }
+                return true
+            }
             override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
                 val u = r.url.toString()
                 if (u.startsWith("http")) return false
@@ -195,6 +207,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         web.setDownloadListener { url, _, cd, mime, _ -> dl(url, URLUtil.guessFileName(url, cd, mime)) }
+    }
+
+    override fun onCreate(b: Bundle?) {
+        super.onCreate(b)
+        inst = this
+        val oldH = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { prefs.edit().putString("lastCrash", android.util.Log.getStackTraceString(e).take(1500)).commit() } catch (_: Exception) {}
+            oldH?.uncaughtException(t, e)
+        }
+        prefs.getString("lastCrash", null)?.let { c ->
+            prefs.edit().remove("lastCrash").apply()
+            AlertDialog.Builder(this).setTitle("آخر خروج مفاجئ — ابعتلي النص ده").setMessage(c).setPositiveButton("تمام", null).show()
+        }
+        DownloadQueue.load(this)
+        buildWeb()
         if (bakedOk()) web.loadUrl(BuildConfig.SERVER_URL)
         else askUrl("اللينك مش متضبط في server_url.txt") // بيظهر بس لو البناء فيه CHANGE-ME
         checkUpdate()
