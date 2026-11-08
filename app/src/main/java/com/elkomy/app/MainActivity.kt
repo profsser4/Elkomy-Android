@@ -69,7 +69,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun dlActive(): Int = DownloadQueue.activeCount()
         @JavascriptInterface
-        fun changeServer() = runOnUiThread { askUrl("تغيير السيرفر") }
+        fun changeServer() {} // مقفول: اللينك ثابت جوه التطبيق
 
         /**
          * جسر الـIPTV: الطلب بيطلع من التليفون نفسه (آيبي مصري + http مسموح + من غير CORS).
@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
                 v.evaluateJavascript(js, null)
             }
             override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
-                if (r.isForMainFrame) askUrl("تعذّر الاتصال بالسيرفر")
+                if (r.isForMainFrame) retryDialog()
             }
             override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
                 val u = r.url.toString()
@@ -195,9 +195,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         web.setDownloadListener { url, _, cd, mime, _ -> dl(url, URLUtil.guessFileName(url, cd, mime)) }
-        val baked = BuildConfig.SERVER_URL
-        val url = if (baked.startsWith("http") && !baked.contains("CHANGE-ME")) baked else prefs.getString("url", null)
-        if (url == null) askUrl("اكتب رابط السيرفر") else web.loadUrl(url)
+        if (bakedOk()) web.loadUrl(BuildConfig.SERVER_URL)
+        else askUrl("اللينك مش متضبط في server_url.txt") // بيظهر بس لو البناء فيه CHANGE-ME
         checkUpdate()
         askNotifPermission()
     }
@@ -246,6 +245,24 @@ class MainActivity : AppCompatActivity() {
             } else File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), n).writeText(text)
             Toast.makeText(this, "تم حفظ الترجمة: $n", Toast.LENGTH_LONG).show()
         } catch (e: Exception) { Toast.makeText(this, "فشل حفظ الترجمة", Toast.LENGTH_LONG).show() }
+    }
+
+    private fun bakedOk(): Boolean {
+        val b = BuildConfig.SERVER_URL
+        return b.startsWith("http") && !b.contains("CHANGE-ME")
+    }
+
+    /** لما النت يفصل: زرار إعادة المحاولة بس، من غير ما حد يكتب لينك */
+    private fun retryDialog() {
+        if (dialogOpen) return
+        if (!bakedOk()) { askUrl("تعذّر الاتصال بالسيرفر"); return }
+        dialogOpen = true
+        AlertDialog.Builder(this).setTitle("تعذّر الاتصال بالسيرفر")
+            .setMessage("اتأكد من النت وجرّب تاني.")
+            .setCancelable(false)
+            .setPositiveButton("إعادة المحاولة") { _, _ -> dialogOpen = false; web.loadUrl(BuildConfig.SERVER_URL) }
+            .setNegativeButton("خروج") { _, _ -> dialogOpen = false; finish() }
+            .show()
     }
 
     private fun askUrl(msg: String) {
