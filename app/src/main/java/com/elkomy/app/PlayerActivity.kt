@@ -124,7 +124,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private var uiShown = true
     private var panel: Dialog? = null
-    private var zoomFill = false
+    private var zoomMode = 0   // 0 طبيعي (شرايط سودا) · 1 تمديد بدون قص · 2 ملء الشاشة بقص
     private var accum = 0
     private var lastSeekAt = 0L
     private var lastDir = 0
@@ -444,7 +444,7 @@ class PlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             addView(speedItem)
-            addView(labeled(IconView.ZOOM, "ملء الشاشة") { toggleZoom() })
+            addView(labeled(IconView.ZOOM, "حجم الصورة") { toggleZoom() })
             addView(labeled(IconView.SUBS, "الصوت والترجمة") { openTracks() })
             // زرار ثابت للحلقة التالية (بيظهر أول ما الصفحة تبلّغ برقمها)
             val ni = labeled(IconView.PLAY, "الحلقة التالية") { goNext() }
@@ -682,9 +682,17 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun toggleZoom() {
-        zoomFill = !zoomFill
-        mp.videoScale = if (zoomFill) MediaPlayer.ScaleType.SURFACE_FIT_SCREEN else MediaPlayer.ScaleType.SURFACE_BEST_FIT
-        Toast.makeText(this, if (zoomFill) "ملء الشاشة" else "الحجم الطبيعي", Toast.LENGTH_SHORT).show()
+        zoomMode = (zoomMode + 1) % 3
+        mp.videoScale = when (zoomMode) {
+            1 -> MediaPlayer.ScaleType.SURFACE_FILL
+            2 -> MediaPlayer.ScaleType.SURFACE_FIT_SCREEN
+            else -> MediaPlayer.ScaleType.SURFACE_BEST_FIT
+        }
+        Toast.makeText(this, when (zoomMode) {
+            1 -> "تمديد (يملا الشاشة بدون قص)"
+            2 -> "ملء الشاشة (بيقص فوق وتحت)"
+            else -> "الحجم الطبيعي"
+        }, Toast.LENGTH_SHORT).show()
     }
 
     // ================= اللوحات (صوت/ترجمة/سرعة) =================
