@@ -2,6 +2,8 @@ package com.elkomy.app
 
 import android.app.Dialog
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.graphics.Canvas
@@ -40,6 +42,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.RendererDiscoverer
+import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.util.VLCVideoLayout
 
 /** أيقونات بشكل نتفلكس (Material paths) من غير ملفات صور */
@@ -53,6 +57,7 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
         const val SUBS = 5
         const val SPEED = 6
         const val ZOOM = 7
+        const val CAST = 8
         private val D = arrayOf(
             "M8 5v14l11-7z",
             "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
@@ -61,7 +66,8 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
             "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z",
             "M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z",
             "M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z",
-            "M19 12h-2v3h-3v2h5v-5zM7 9h3V7H5v5h2V9zm14-6H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.99h18v14.02z"
+            "M19 12h-2v3h-3v2h5v-5zM7 9h3V7H5v5h2V9zm14-6H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.99h18v14.02z",
+            "M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"
         )
     }
 
@@ -168,21 +174,34 @@ class PlayerActivity : AppCompatActivity() {
         override fun run() {
             if (waiting) { h.postDelayed(this, 500); return }
             if (++n % 20 == 0) report(false)
-            val len = mp.length
-            if (!dragging && len > 0) {
-                val t = mp.time
-                seek.progress = (mp.position * 1000).toInt()
-                tvRemain.text = fmt(len - t)
+            if (cast != null) {
+                val cl = castLen
+                if (!dragging && cl > 0) {
+                    seek.progress = (castPos * 1000 / cl).toInt().coerceIn(0, 1000)
+                    tvRemain.text = fmt((cl - castPos) * 1000)
+                }
+                playBtn.setKind(if (castPlaying) IconView.PAUSE else IconView.PLAY)
+                if (cl > 10 && castPos >= cl - 2 && !castFired && System.currentTimeMillis() - castSince > 8000) {
+                    castFired = true
+                    onEnded()
+                }
+            } else {
+                val len = mp.length
+                if (!dragging && len > 0) {
+                    val t = mp.time
+                    seek.progress = (mp.position * 1000).toInt()
+                    tvRemain.text = fmt(len - t)
+                }
+                playBtn.setKind(if (mp.isPlaying) IconView.PAUSE else IconView.PLAY)
             }
-            playBtn.setKind(if (mp.isPlaying) IconView.PAUSE else IconView.PLAY)
             updateNext()
             h.postDelayed(this, 500)
         }
     }
 
     private fun report(ended: Boolean) {
-        val len = mp.length / 1000
-        val pos = mp.time / 1000
+        val len = curLen()
+        val pos = curPos()
         if (len <= 0) return
         MainActivity.inst?.web?.evaluateJavascript("window.nativeProgress&&nativeProgress($pos,$len,$ended)", null)
     }
@@ -275,13 +294,7 @@ class PlayerActivity : AppCompatActivity() {
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
-                MediaPlayer.Event.EndReached -> {
-                    if (!waiting) {
-                        if (hasLocalNext() && autoNext) { h.post { playLocalNext() }; return@setEventListener }
-                        report(true)
-                        if (nextLabel.isNotEmpty() && autoNext) beginWait(nextLabel) else finish()
-                    }
-                }
+                MediaPlayer.Event.EndReached -> { if (cast == null) onEnded() }
                 MediaPlayer.Event.Playing -> {
                     if (swapping) {
                         swapping = false
@@ -421,7 +434,12 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 override fun onStopTrackingTouch(s: SeekBar) {
                     dragging = false
-                    mp.setPosition(s.progress / 1000f)
+                    val dv = cast
+                    if (dv != null) {
+                        val t = castLen * s.progress / 1000
+                        castPos = t
+                        Thread { Dlna.seek(dv, t) }.start()
+                    } else mp.setPosition(s.progress / 1000f)
                     scheduleHide()
                 }
             })
@@ -446,6 +464,7 @@ class PlayerActivity : AppCompatActivity() {
             addView(speedItem)
             addView(labeled(IconView.ZOOM, "حجم الصورة") { toggleZoom() })
             addView(labeled(IconView.SUBS, "الصوت والترجمة") { openTracks() })
+            addView(labeled(IconView.CAST, "بث") { openCast() })
             // زرار ثابت للحلقة التالية (بيظهر أول ما الصفحة تبلّغ برقمها)
             val ni = labeled(IconView.PLAY, "الحلقة التالية") { goNext() }
             ni.visibility = View.GONE
@@ -514,6 +533,13 @@ class PlayerActivity : AppCompatActivity() {
             addView(waitText, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
         }
         root.addView(waitLayer, FrameLayout.LayoutParams(-1, -1))
+        castLabel = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            background = round(0xCC141414.toInt(), 16)
+            visibility = View.GONE
+        }
+        root.addView(castLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(70) })
         setContentView(root)
         showUi()
     }
@@ -533,8 +559,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun updateNext() {
         val b = nextBtn ?: return
         if (isDestroyed || isFinishing || waiting || swapping) return
-        val len = mp.length
-        val left = if (len > 0) (len - mp.time) / 1000 else -1L
+        val len = curLen() * 1000
+        val left = if (len > 0) (len - curPos() * 1000) / 1000 else -1L
         // الزرار الثابت في الشريط السفلي: بيظهر طول ما فيه حلقة تالية معروفة
         nextItem?.let { ni ->
             if (nextLabel.isNotEmpty()) {
@@ -545,7 +571,7 @@ class PlayerActivity : AppCompatActivity() {
         // الزرار الكبير بالعدّاد: آخر 250 ثانية، فوق الواجهة (ظاهر حتى لو الأزرار مخفية)
         if (nextLabel.isNotEmpty() && left in 1L..250L) {
             nextLbl?.text = nextLabel
-            nextTime?.text = "· " + fmt(len - mp.time)
+            nextTime?.text = "· " + fmt(len - curPos() * 1000)
             if (b.visibility != View.VISIBLE) b.visibility = View.VISIBLE
         } else if (b.visibility != View.GONE) b.visibility = View.GONE
     }
@@ -566,7 +592,7 @@ class PlayerActivity : AppCompatActivity() {
         pfd = null
         curUrl = plUrls[plIdx]
         loadMedia(curUrl, 0)
-        mp.play()
+        if (cast == null) mp.play()
         Toast.makeText(this, "▶ " + titleText, Toast.LENGTH_SHORT).show()
         showUi()
     }
@@ -616,7 +642,7 @@ class PlayerActivity : AppCompatActivity() {
         pfd = null
         curUrl = url
         loadMedia(url, startSec)
-        mp.play()
+        if (cast == null) mp.play()
     }
 
     // ================= إظهار/إخفاء الواجهة =================
@@ -643,6 +669,14 @@ class PlayerActivity : AppCompatActivity() {
 
     // ================= التحكم =================
     private fun togglePlay() {
+        cast?.let { dv ->
+            castPlaying = !castPlaying
+            val pl = castPlaying
+            Thread { if (pl) Dlna.resume(dv) else Dlna.pause(dv) }.start()
+            playBtn.setKind(if (pl) IconView.PAUSE else IconView.PLAY)
+            showUi()
+            return
+        }
         val was = mp.isPlaying
         if (was) mp.pause() else mp.play()
         playBtn.setKind(if (was) IconView.PLAY else IconView.PAUSE)
@@ -650,6 +684,13 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun seekBy(sec: Int) {
+        cast?.let { dv ->
+            if (castLen <= 0) return
+            val t = (castPos + sec).coerceIn(0L, maxOf(0L, castLen - 2))
+            castPos = t
+            Thread { Dlna.seek(dv, t) }.start()
+            return
+        }
         val len = mp.length
         if (len <= 0) return
         val t = (mp.time + sec * 1000L).coerceIn(0L, maxOf(0L, len - 1500L))
@@ -799,6 +840,180 @@ class PlayerActivity : AppCompatActivity() {
         showPanel(box, 0.36f, null)
     }
 
+    // ================= البث للتلفزيون =================
+    @Volatile private var cast: Dlna.Dev? = null        // بث DLNA (سامسونج / LG / أي شاشة)
+    @Volatile private var castPos = 0L
+    @Volatile private var castLen = 0L
+    @Volatile private var castSince = 0L
+    private var castPlaying = false
+    private var castFired = false
+    private var castLabel: TextView? = null
+    private var castList: LinearLayout? = null
+    private var searching = false
+    private var renderer: RendererItem? = null          // بث Chromecast عن طريق LibVLC
+    private var rd: RendererDiscoverer? = null
+    private val rItems = ArrayList<RendererItem>()
+    private val dItems = ArrayList<Dlna.Dev>()
+
+    private fun curPos(): Long = if (cast != null) castPos else mp.time / 1000
+    private fun curLen(): Long = if (cast != null) castLen else mp.length / 1000
+
+    private fun onEnded() {
+        if (waiting) return
+        if (hasLocalNext() && autoNext) { h.post { playLocalNext() }; return }
+        report(true)
+        if (nextLabel.isNotEmpty() && autoNext) beginWait(nextLabel) else finish()
+    }
+
+    private fun startRd() {
+        if (rd != null) return
+        try {
+            val r = RendererDiscoverer(vlc, "microdns_renderer")
+            r.setEventListener { ev ->
+                when (ev.type) {
+                    RendererDiscoverer.Event.ItemAdded -> {
+                        val item = ev.item
+                        item.retain()
+                        runOnUiThread { rItems.add(item); fillCast() }
+                    }
+                    RendererDiscoverer.Event.ItemDeleted -> {
+                        val nm = ev.item.name
+                        runOnUiThread { rItems.removeAll { x -> x.name == nm }; fillCast() }
+                    }
+                    else -> {}
+                }
+            }
+            if (r.start()) rd = r
+        } catch (_: Throwable) {}
+    }
+
+    private fun openCast() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = round(0xF2181818.toInt(), 12)
+            setPadding(dp(22), dp(18), dp(22), dp(14))
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+        }
+        box.addView(TextView(this).apply {
+            text = "البث على شاشة"
+            setTextColor(Color.WHITE)
+            textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(8), 0, 0, dp(10))
+        })
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        castList = inner
+        box.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        searching = true
+        dItems.clear()
+        fillCast()
+        startRd()
+        Dlna.discover(this, { d ->
+            runOnUiThread { if (dItems.none { it.ctrl == d.ctrl }) { dItems.add(d); fillCast() } }
+        }, { runOnUiThread { searching = false; fillCast() } })
+        showPanel(box, 0.55f, 0.8f)
+    }
+
+    private fun fillCast() {
+        val l = castList ?: return
+        l.removeAllViews()
+        if (cast != null || renderer != null)
+            l.addView(optionRow("⏹  إيقاف البث (الرجوع للموبايل)", false) { stopCast(); panel?.dismiss() })
+        rItems.forEach { r ->
+            l.addView(optionRow("📺  " + r.displayName + "  (Chromecast)", renderer === r) { castToRenderer(r); panel?.dismiss() })
+        }
+        dItems.forEach { d ->
+            l.addView(optionRow("📺  " + d.name, cast?.ctrl == d.ctrl) { castToDlna(d); panel?.dismiss() })
+        }
+        if (rItems.isEmpty() && dItems.isEmpty())
+            l.addView(optionRow(if (searching) "جاري البحث عن الشاشات..." else "مفيش شاشات ظاهرة. اتأكد إن الموبايل والتلفزيون على نفس الواي فاي", false) {})
+        l.addView(optionRow("🖥  مشاركة الشاشة (Miracast / Smart View)", false) { openMirror() })
+    }
+
+    private fun openMirror() {
+        try { startActivity(Intent(Settings.ACTION_CAST_SETTINGS)) }
+        catch (_: Throwable) {
+            try { startActivity(Intent("android.settings.WIFI_DISPLAY_SETTINGS")) }
+            catch (_: Throwable) {
+                Toast.makeText(this, "افتح Smart View من لوحة الإشعارات (اسحب من فوق)", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun castToRenderer(r: RendererItem) {
+        val pos = mp.time / 1000
+        stopDlnaOnly()
+        renderer = r
+        mp.setRenderer(r)
+        loadMedia(curUrl, pos.toInt())
+        mp.play()
+        castLabel?.text = "📺  " + r.displayName
+        castLabel?.visibility = View.VISIBLE
+    }
+
+    private fun castToDlna(d: Dlna.Dev) {
+        if (!curUrl.startsWith("http")) {
+            Toast.makeText(this, "الملفات المحمّلة على الموبايل مبتتبثش. اشغّلها من الرابط الأونلاين", Toast.LENGTH_LONG).show()
+            return
+        }
+        val pos = mp.time / 1000
+        if (renderer != null) { mp.setRenderer(null); renderer = null }
+        stopDlnaOnly()
+        try { mp.pause() } catch (_: Throwable) {}
+        castPos = pos; castLen = mp.length / 1000; castFired = false
+        castPlaying = true; castSince = System.currentTimeMillis()
+        cast = d
+        castLabel?.text = "📺  " + d.name
+        castLabel?.visibility = View.VISIBLE
+        val url = curUrl
+        val tt = titleText
+        Thread {
+            val ok = Dlna.start(d, url, tt, pos.toInt())
+            if (!ok) runOnUiThread {
+                Toast.makeText(this, "التلفزيون رفض الرابط أو مش بيرد", Toast.LENGTH_LONG).show()
+                stopCast()
+            }
+        }.start()
+        startPoll()
+    }
+
+    private fun stopDlnaOnly() {
+        val d = cast ?: return
+        cast = null
+        Thread { Dlna.stop(d) }.start()
+    }
+
+    private fun stopCast() {
+        val d = cast
+        if (d != null) {
+            val pos = castPos
+            cast = null
+            Thread { Dlna.stop(d) }.start()
+            try { mp.setTime(pos * 1000); mp.play() } catch (_: Throwable) {}
+        } else if (renderer != null) {
+            val pos = mp.time / 1000
+            renderer = null
+            mp.setRenderer(null)
+            loadMedia(curUrl, pos.toInt())
+            mp.play()
+        }
+        castLabel?.visibility = View.GONE
+    }
+
+    private fun startPoll() {
+        Thread {
+            while (!isDestroyed) {
+                val d = cast ?: break
+                val r = Dlna.pos(d)
+                if (r != null && cast != null) {
+                    castPos = r.first
+                    if (r.second > 0) castLen = r.second
+                }
+                try { Thread.sleep(1200) } catch (_: InterruptedException) { break }
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
     // ================= ريموت / كيبورد (تلفزيون) =================
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         if (e.action == KeyEvent.ACTION_DOWN && panel == null) {
@@ -831,6 +1046,29 @@ class PlayerActivity : AppCompatActivity() {
 
     // ================= دورة الحياة =================
     private fun loadMedia(url: String, startIntent: Int) {
+        cast?.let { dv ->
+            if (url.startsWith("http")) {
+                castPos = startIntent.toLong(); castLen = 0; castFired = false
+                castPlaying = true; castSince = System.currentTimeMillis()
+                swapping = false
+                waitLayer?.visibility = View.GONE
+                val tt = titleText
+                Thread {
+                    val ok = Dlna.start(dv, url, tt, startIntent)
+                    if (!ok) runOnUiThread {
+                        Toast.makeText(this, "التلفزيون رفض الرابط", Toast.LENGTH_LONG).show()
+                        stopCast()
+                    }
+                }.start()
+                showUi()
+                return
+            } else {
+                // ملف محمّل على الموبايل: التلفزيون مش هيوصله، نرجع نشغّله محليًا
+                cast = null
+                Thread { Dlna.stop(dv) }.start()
+                castLabel?.visibility = View.GONE
+            }
+        }
         val u = Uri.parse(url)
         val m = if (u.scheme == "content") {
             val fd = try { contentResolver.openFileDescriptor(u, "r") } catch (_: Throwable) { null }
@@ -856,7 +1094,7 @@ class PlayerActivity : AppCompatActivity() {
             curUrl = url
             loadMedia(url, intent.getIntExtra("start", 0))
         }
-        mp.play()
+        if (cast == null) mp.play()
         h.post(tick)
     }
 
@@ -884,6 +1122,9 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         h.removeCallbacks(waitTimeout)
         if (inst === this) inst = null
+        if (isFinishing) cast?.let { dv -> Thread { Dlna.stop(dv) }.start() }
+        try { rd?.stop(); rd?.release() } catch (_: Throwable) {}
+        rItems.forEach { try { it.release() } catch (_: Throwable) {} }
         mp.release()
         vlc.release()
         try { pfd?.close() } catch (_: Throwable) {}
