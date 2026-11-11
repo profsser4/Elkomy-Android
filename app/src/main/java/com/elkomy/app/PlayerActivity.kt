@@ -970,7 +970,7 @@ class PlayerActivity : AppCompatActivity() {
         Thread {
             val ok = Dlna.start(d, url, tt, pos.toInt())
             if (!ok) runOnUiThread {
-                Toast.makeText(this, "التلفزيون رفض الرابط أو مش بيرد", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "التلفزيون رفض الرابط أو مش بيرد\n" + Dlna.lastError, Toast.LENGTH_LONG).show()
                 stopCast()
             }
         }.start()
@@ -1056,7 +1056,7 @@ class PlayerActivity : AppCompatActivity() {
                 Thread {
                     val ok = Dlna.start(dv, url, tt, startIntent)
                     if (!ok) runOnUiThread {
-                        Toast.makeText(this, "التلفزيون رفض الرابط", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "التلفزيون رفض الرابط\n" + Dlna.lastError, Toast.LENGTH_LONG).show()
                         stopCast()
                     }
                 }.start()
