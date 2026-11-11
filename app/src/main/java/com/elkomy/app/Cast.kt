@@ -236,6 +236,7 @@ object Dlna {
     fun start(d: Dev, url: String, title: String, startSec: Int): Boolean {
         lastError = ""
         Proxy.last = ""
+        Proxy.hits = 0
         val res = resolve(url)
         val m1 = mimeFor(res.url, res.type)
         val hls = m1.contains("mpegurl")
@@ -267,7 +268,7 @@ object Dlna {
             lastError = ""
             return true
         }
-        if (Proxy.last.isNotEmpty()) lastError = "$lastError | ${Proxy.last}"
+        lastError = "$lastError | phone=$ip:$port tvRequests=${Proxy.hits} ${Proxy.last}".trim()
         return false
     }
 
@@ -294,6 +295,7 @@ object Dlna {
     // =====================================================================
     private object Proxy {
         @Volatile var last: String = ""
+        @Volatile var hits: Int = 0
         @Volatile private var ss: ServerSocket? = null
         private val pool = Executors.newCachedThreadPool()
 
@@ -422,6 +424,7 @@ object Dlna {
                     if (k == "range") range = v
                     if (k == "host") host = v
                 }
+                hits++
                 if (!parts[1].startsWith("/p/")) { head(out, "404 Not Found", mapOf("Content-Length" to "0")); return }
                 val tok = parts[1].removePrefix("/p/").substringBefore('?')
                 val ext = tok.substringAfterLast('.', "bin")
