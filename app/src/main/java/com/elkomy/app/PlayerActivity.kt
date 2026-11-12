@@ -1,6 +1,8 @@
 package com.elkomy.app
 
+import android.app.AlertDialog
 import android.app.Dialog
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
@@ -19,6 +21,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.util.Rational
+import android.text.InputType
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
@@ -27,7 +31,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -45,6 +51,14 @@ import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererDiscoverer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.util.VLCVideoLayout
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /** أيقونات بشكل نتفلكس (Material paths) من غير ملفات صور */
 class IconView(ctx: Context, kind: Int) : View(ctx) {
@@ -59,6 +73,11 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
         const val ZOOM = 7
         const val CAST = 8
         const val DL = 9
+        const val LOCK = 10
+        const val PIP = 11
+        const val TIMER = 12
+        const val AI = 13
+        const val TUNE = 14
         private val D = arrayOf(
             "M8 5v14l11-7z",
             "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
@@ -69,7 +88,12 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
             "M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z",
             "M19 12h-2v3h-3v2h5v-5zM7 9h3V7H5v5h2V9zm14-6H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.99h18v14.02z",
             "M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z",
-            "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+            "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
+            "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z",
+            "M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z",
+            "M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z",
+            "M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z",
+            "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
         )
     }
 
@@ -107,7 +131,11 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
 }
 
 class PlayerActivity : AppCompatActivity() {
-    companion object { @Volatile var inst: PlayerActivity? = null }
+    companion object {
+        @Volatile var inst: PlayerActivity? = null
+        const val AI_URL = "https://api.anthropic.com/v1/messages"
+        const val AI_MODEL = "claude-haiku-5-5"
+    }
     private lateinit var vlc: LibVLC
     private lateinit var mp: MediaPlayer
     private lateinit var video: VLCVideoLayout
@@ -171,11 +199,36 @@ class PlayerActivity : AppCompatActivity() {
 
     private val RED = 0xFFE50914.toInt()
 
+    // ---- ترقيات جديدة ----
+    private var hwOn = true               // فك تشفير بالهاردوير، ولو فشل بنرجع للسوفتوير تلقائي
+    private var hwRetried = false
+    private var locked = false
+    private var lockBtn: IconView? = null
+    private var hud: TextView? = null
+    private val hudHide = Runnable { hud?.visibility = View.GONE }
+    private val lockHide = Runnable { lockBtn?.visibility = View.GONE }
+    private var gMode = 0                 // 0 لا شيء · 1 سطوع · 2 صوت · 3 تقديم/تأخير بالسحب
+    private var gStartBright = 0.5f
+    private var gStartVol = 100
+    private var gStartPos = 0L
+    private var gTarget = 0L
+    private var longFast = false
+    private var prevRate = 1f
+    private var aspectIdx = 0
+    private val aspects = arrayOf<String?>(null, "16:9", "4:3", "21:9", "1:1")
+    private var eqIdx = -1
+    private var sleepRun: Runnable? = null
+    private var sleepAtEnd = false
+    private var autoPip = true
+    private var aiBusy = false
+    private var picked = false
+
     private val hideRun = Runnable { hideUi() }
 
     private val tick = object : Runnable {
         override fun run() {
             if (waiting) { h.postDelayed(this, 500); return }
+            if (inPip() && uiShown) hideUi()
             if (++n % 20 == 0) report(false)
             if (cast != null) {
                 val cl = castLen
@@ -286,14 +339,14 @@ class PlayerActivity : AppCompatActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        val raw = intent.getStringExtra("title") ?: ""
+        val raw = intent.getStringExtra("title") ?: intent.data?.lastPathSegment ?: ""
         sub = raw.substringAfter("\n@@SUB@@", "")
         titleText = raw.substringBefore("\n@@SUB@@")
         plUrls = intent.getStringArrayExtra("pl_urls") ?: emptyArray()
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
         if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
-        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500"))
+        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--file-caching=1500", "--live-caching=1500", "--subsdec-encoding=Windows-1256"))
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
@@ -311,6 +364,10 @@ class PlayerActivity : AppCompatActivity() {
                         subAdded = true
                         try { mp.addSlave(0, Uri.parse(sub), true) } catch (_: Throwable) {}
                     }
+                    if (!picked) {
+                        picked = true
+                        h.postDelayed({ autoPickTracks() }, 1800)
+                    }
                 }
                 MediaPlayer.Event.Paused -> {
                     playBtn.setKind(IconView.PLAY)
@@ -318,10 +375,19 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 MediaPlayer.Event.Buffering -> spinner.visibility = if (ev.buffering < 100f) View.VISIBLE else View.GONE
                 MediaPlayer.Event.EncounteredError -> {
-                    spinner.visibility = View.GONE
-                    swapping = false
-                    waitLayer?.visibility = View.GONE
-                    Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
+                    if (hwOn && !hwRetried && cast == null && curUrl.isNotEmpty()) {
+                        // أول فشل: نجرّب فك التشفير بالسوفتوير (بيشغّل أي كودك) من نفس المكان
+                        hwRetried = true
+                        hwOn = false
+                        Toast.makeText(this, "بجرّب وضع التوافق الكامل...", Toast.LENGTH_SHORT).show()
+                        val p = (maxOf(0L, mp.time) / 1000).toInt()
+                        h.post { if (!isDestroyed) { loadMedia(curUrl, p); mp.play() } }
+                    } else {
+                        spinner.visibility = View.GONE
+                        swapping = false
+                        waitLayer?.visibility = View.GONE
+                        Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
+                    }
                 }
                 else -> {}
             }
@@ -347,6 +413,7 @@ class PlayerActivity : AppCompatActivity() {
                 return if (x < w * 0.35f) -1 else if (x > w * 0.65f) 1 else 0
             }
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (locked) return false
                 if (System.currentTimeMillis() - lastSeekAt < 700) {
                     val s = side(e.x)
                     if (s != 0) stepSeek(s)
@@ -354,19 +421,75 @@ class PlayerActivity : AppCompatActivity() {
                 return false
             }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (locked) { showLockBtn(); return true }
                 if (System.currentTimeMillis() - lastSeekAt < 900) return true
                 if (uiShown) hideUi() else showUi()
                 return true
             }
             override fun onDoubleTapEvent(e: MotionEvent): Boolean {
+                if (locked) return true
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                     val s = side(e.x)
                     if (s == 0) togglePlay() else stepSeek(s)
                 }
                 return true
             }
+            // سحب رأسي يمين = صوت (لحد 200%) · شمال = سطوع · سحب أفقي = تقديم/تأخير مع معاينة
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+                if (locked || e1 == null || e2.pointerCount > 1) return false
+                val w = touch.width.toFloat()
+                val hh = touch.height.toFloat()
+                if (w <= 0f || hh <= 0f) return false
+                if (gMode == 0) {
+                    val ax = Math.abs(e2.x - e1.x)
+                    val ay = Math.abs(e2.y - e1.y)
+                    gMode = if (ax > ay * 1.4f) 3 else if (e1.x < w / 2f) 1 else 2
+                    when (gMode) {
+                        1 -> gStartBright = currentBrightness()
+                        2 -> if (cast != null) gMode = -1 else gStartVol = mp.volume
+                        3 -> if (cast != null || mp.length <= 0) gMode = -1 else {
+                            gStartPos = mp.time
+                            gTarget = gStartPos
+                            h.removeCallbacks(hideRun)
+                        }
+                    }
+                }
+                val d = (e1.y - e2.y) / hh
+                when (gMode) {
+                    1 -> {
+                        val v = (gStartBright + d * 1.3f).coerceIn(0.02f, 1f)
+                        setBrightness(v)
+                        showHud("🔆 " + (v * 100).toInt() + "%")
+                    }
+                    2 -> {
+                        val v = (gStartVol + d * 220f).toInt().coerceIn(0, 200)
+                        mp.setVolume(v)
+                        showHud((if (v == 0) "🔇 " else "🔊 ") + v + "%")
+                    }
+                    3 -> {
+                        val len = mp.length
+                        gTarget = (gStartPos + ((e2.x - e1.x) / w * 150000f).toLong()).coerceIn(0L, maxOf(0L, len - 1500L))
+                        val diff = (gTarget - gStartPos) / 1000
+                        showHud((if (diff >= 0) "+" else "-") + fmt(Math.abs(diff) * 1000) + "   (" + fmt(gTarget) + ")")
+                    }
+                }
+                return true
+            }
+            // ضغطة مطوّلة = سرعة 2x لحد ما تسيب إيدك
+            override fun onLongPress(e: MotionEvent) {
+                if (locked || cast != null || gMode != 0 || !mp.isPlaying) return
+                prevRate = mp.rate
+                longFast = true
+                mp.setRate(2f)
+                showHud("⏩ 2x", 0L)
+            }
         })
-        touch.setOnTouchListener { _, e -> gd.onTouchEvent(e); true }
+        touch.setOnTouchListener { _, e ->
+            gd.onTouchEvent(e)
+            if (e.actionMasked == MotionEvent.ACTION_UP) endGesture(true)
+            else if (e.actionMasked == MotionEvent.ACTION_CANCEL) endGesture(false)
+            true
+        }
         root.addView(touch, FrameLayout.LayoutParams(-1, -1))
 
         ripL = rip(true)
@@ -468,6 +591,9 @@ class PlayerActivity : AppCompatActivity() {
             addView(labeled(IconView.ZOOM, "حجم الصورة") { toggleZoom() })
             addView(labeled(IconView.SUBS, "الصوت والترجمة") { openTracks() })
             addView(labeled(IconView.CAST, "بث") { openCast() })
+            addView(labeled(IconView.AI, "ترجمة ذكية") { aiTranslate() })
+            addView(labeled(IconView.TUNE, "أدوات") { openTools() })
+            addView(labeled(IconView.LOCK, "قفل") { setLocked(true) })
             // زرار «تحميل»: بيطلب من الصفحة تحمّل الفيديو الحالي (مش بيظهر للملفات المحمّلة أصلًا على الموبايل)
             val di = labeled(IconView.DL, "تحميل") { startDownload() }
             dlItem = di
@@ -485,7 +611,11 @@ class PlayerActivity : AppCompatActivity() {
             isClickable = true
             setOnClickListener { showUi() }
             addView(row1)
-            addView(row2)
+            addView(HorizontalScrollView(this@PlayerActivity).apply {
+                isHorizontalScrollBarEnabled = false
+                isFillViewport = true
+                addView(row2)
+            })
         }
         ui.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
@@ -547,6 +677,23 @@ class PlayerActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         root.addView(castLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(70) })
+        hud = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 17f; typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = round(0xCC141414.toInt(), 20)
+            visibility = View.GONE
+        }
+        root.addView(hud, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(28) })
+        lockBtn = IconView(this, IconView.LOCK).apply {
+            setPadding(dp(11), dp(11), dp(11), dp(11))
+            background = round(0x99000000.toInt(), 26)
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { setLocked(false) }
+        }
+        root.addView(lockBtn, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.START or Gravity.CENTER_VERTICAL).apply { marginStart = dp(28) })
         setContentView(root)
         showUi()
     }
@@ -566,6 +713,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun updateNext() {
         val b = nextBtn ?: return
         if (isDestroyed || isFinishing || waiting || swapping) return
+        if (inPip()) { if (b.visibility != View.GONE) b.visibility = View.GONE; return }
         val len = curLen() * 1000
         val left = if (len > 0) (len - curPos() * 1000) / 1000 else -1L
         // الزرار الثابت في الشريط السفلي: بيظهر طول ما فيه حلقة تالية معروفة
@@ -595,7 +743,7 @@ class PlayerActivity : AppCompatActivity() {
         plIdx++
         titleText = plTitles[plIdx]
         tvTitle?.text = titleText
-        sub = ""; subAdded = false; n = 0
+        sub = ""; subAdded = false; n = 0; hwOn = true; hwRetried = false
         nextBtn?.visibility = View.GONE
         nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
         seek.progress = 0
@@ -663,6 +811,7 @@ class PlayerActivity : AppCompatActivity() {
         tvTitle?.text = titleText
         subAdded = false
         n = 0
+        hwOn = true; hwRetried = false
         nextLabel = ""
         skipStopReport = false
         waiting = false
@@ -678,6 +827,7 @@ class PlayerActivity : AppCompatActivity() {
 
     // ================= إظهار/إخفاء الواجهة =================
     private fun showUi() {
+        if (locked) return
         uiShown = true
         ui.animate().cancel()
         ui.visibility = View.VISIBLE
@@ -753,6 +903,22 @@ class PlayerActivity : AppCompatActivity() {
         h.postDelayed(r, 600)
     }
 
+    /** بيفتكر اختيارك الأخير للترجمة، وإلا بيختار العربي لوحده لو موجود */
+    private fun autoPickTracks() {
+        if (isDestroyed || cast != null) return
+        try {
+            val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
+            val spu = mp.spuTracks ?: return
+            if (spu.isEmpty()) return
+            if (pref == "off") { mp.setSpuTrack(-1); return }
+            val ar = Regex("(^|[\\s\\[(-])(ar|ara)([\\s\\])-]|$)", RegexOption.IGNORE_CASE)
+            fun isAr(n: String) = n.contains("arab", true) || n.contains("عرب") || ar.containsMatchIn(n)
+            val cand = spu.firstOrNull { it.id != -1 && pref != null && it.name == pref }
+                ?: spu.firstOrNull { it.id != -1 && isAr(it.name) }
+            if (cand != null && mp.spuTrack != cand.id) mp.setSpuTrack(cand.id)
+        } catch (_: Throwable) {}
+    }
+
     private fun toggleZoom() {
         zoomMode = (zoomMode + 1) % 3
         mp.videoScale = when (zoomMode) {
@@ -765,6 +931,113 @@ class PlayerActivity : AppCompatActivity() {
             2 -> "ملء الشاشة (بيقص فوق وتحت)"
             else -> "الحجم الطبيعي"
         }, Toast.LENGTH_SHORT).show()
+    }
+
+    // ================= HUD / إيماءات / قفل / PiP / مؤقت نوم =================
+    private fun showHud(t: String, ms: Long = 900L) {
+        val v = hud ?: return
+        v.text = t
+        v.visibility = View.VISIBLE
+        h.removeCallbacks(hudHide)
+        if (ms > 0L) h.postDelayed(hudHide, ms)
+    }
+
+    private fun currentBrightness(): Float {
+        val b = window.attributes.screenBrightness
+        if (b >= 0f) return b
+        return try { Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f } catch (_: Throwable) { 0.5f }
+    }
+
+    private fun setBrightness(v: Float) {
+        val lp = window.attributes
+        lp.screenBrightness = v
+        window.attributes = lp
+    }
+
+    private fun endGesture(commit: Boolean) {
+        if (gMode == 3 && commit && cast == null) {
+            val len = mp.length
+            if (len > 0) {
+                mp.setTime(gTarget)
+                seek.progress = (gTarget * 1000 / len).toInt()
+                tvRemain.text = fmt(len - gTarget)
+            }
+            scheduleHide()
+        }
+        gMode = 0
+        if (longFast) {
+            longFast = false
+            try { mp.setRate(prevRate) } catch (_: Throwable) {}
+            h.removeCallbacks(hudHide)
+            hud?.visibility = View.GONE
+        }
+    }
+
+    private fun setLocked(on: Boolean) {
+        locked = on
+        if (on) {
+            panel?.dismiss()
+            h.removeCallbacks(hideRun)
+            uiShown = false
+            ui.animate().cancel(); ui.alpha = 0f; ui.visibility = View.GONE
+            showHud("🔒 الشاشة مقفولة — المس الشاشة وبعدين اضغط القفل", 1600L)
+            showLockBtn()
+        } else {
+            h.removeCallbacks(lockHide)
+            lockBtn?.visibility = View.GONE
+            showUi()
+        }
+    }
+
+    private fun showLockBtn() {
+        lockBtn?.visibility = View.VISIBLE
+        h.removeCallbacks(lockHide)
+        h.postDelayed(lockHide, 2500)
+    }
+
+    private fun inPip() = Build.VERSION.SDK_INT >= 26 && isInPictureInPictureMode
+
+    private fun enterPip() {
+        if (Build.VERSION.SDK_INT < 26) {
+            Toast.makeText(this, "صورة داخل صورة محتاجة أندرويد 8 أو أحدث", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            panel?.dismiss()
+            var r = 16f / 9f
+            try { mp.currentVideoTrack?.let { if (it.width > 0 && it.height > 0) r = it.width.toFloat() / it.height } } catch (_: Throwable) {}
+            r = r.coerceIn(0.45f, 2.3f)
+            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational((r * 1000).toInt(), 1000)).build())
+        } catch (_: Throwable) {
+            Toast.makeText(this, "صورة داخل صورة مش مفعّلة: ضيف supportsPictureInPicture في الـ Manifest", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (autoPip && cast == null && !waiting && !locked && mp.isPlaying) enterPip()
+    }
+
+    /** min: 0 إلغاء · -1 لحد نهاية الحلقة · غير كده بالدقايق */
+    private fun setSleep(min: Int) {
+        sleepRun?.let { h.removeCallbacks(it) }
+        sleepRun = null
+        sleepAtEnd = false
+        when {
+            min == 0 -> Toast.makeText(this, "اتلغى مؤقت النوم", Toast.LENGTH_SHORT).show()
+            min < 0 -> { sleepAtEnd = true; Toast.makeText(this, "😴 هيقفل بعد نهاية الحلقة", Toast.LENGTH_SHORT).show() }
+            else -> {
+                val r = Runnable {
+                    val dv = cast
+                    if (dv != null) Thread { Dlna.pause(dv) }.start() else try { mp.pause() } catch (_: Throwable) {}
+                    Toast.makeText(this, "😴 مؤقت النوم: تم الإيقاف", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+                sleepRun = r
+                h.postDelayed(r, min * 60_000L)
+                Toast.makeText(this, "😴 هيقفل بعد $min دقيقة", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     // ================= اللوحات (صوت/ترجمة/سرعة) =================
@@ -840,7 +1113,11 @@ class PlayerActivity : AppCompatActivity() {
         box.addView(View(this).apply { setBackgroundColor(0x33FFFFFF) }, LinearLayout.LayoutParams(dp(1), -1).apply {
             marginStart = dp(12); marginEnd = dp(12)
         })
-        box.addView(column("الترجمة", mp.spuTracks, mp.spuTrack, true) { mp.setSpuTrack(it) },
+        box.addView(column("الترجمة", mp.spuTracks, mp.spuTrack, true) { id ->
+            mp.setSpuTrack(id)
+            val nm = if (id == -1) "off" else mp.spuTracks?.firstOrNull { it.id == id }?.name
+            getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", nm).apply()
+        },
             LinearLayout.LayoutParams(0, -1, 1f))
         showPanel(box, 0.78f, 0.78f)
     }
@@ -891,6 +1168,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun onEnded() {
         if (waiting) return
+        if (sleepAtEnd) { sleepAtEnd = false; report(true); finish(); return }
         if (hasLocalNext() && autoNext) { h.post { playLocalNext() }; return }
         report(true)
         if (nextLabel.isNotEmpty() && autoNext) beginWait(nextLabel) else finish()
@@ -1062,8 +1340,345 @@ class PlayerActivity : AppCompatActivity() {
         }.also { it.isDaemon = true }.start()
     }
 
+    // ================= لوحة الأدوات =================
+    private fun toolsBox(title: String): LinearLayout {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = round(0xF2181818.toInt(), 12)
+            setPadding(dp(22), dp(18), dp(22), dp(14))
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+        }
+        box.addView(TextView(this).apply {
+            text = title
+            setTextColor(Color.WHITE)
+            textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(8), 0, 0, dp(10))
+        })
+        return box
+    }
+
+    /** صف بزرارين − / + لضبط قيمة (بالميكروثانية) من غير ما اللوحة تتقفل */
+    private fun stepper(label: String, getV: () -> Long, setV: (Long) -> Unit): View {
+        val tv = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; gravity = Gravity.CENTER }
+        fun refresh() { tv.text = label + ": " + (getV() / 1000) + " ms" }
+        fun btn(t: String, d: Long) = TextView(this).apply {
+            text = t
+            setTextColor(Color.WHITE); textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(4), dp(18), dp(4))
+            background = round(0x33FFFFFF, 8)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { setV(getV() + d); refresh() }
+            focusScale(this)
+        }
+        refresh()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            addView(btn("−", -100_000L))
+            addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(btn("+", 100_000L))
+        }
+    }
+
+    private fun openTools() {
+        val box = toolsBox("أدوات")
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inner.addView(optionRow("📐  نسبة العرض: " + (aspects[aspectIdx] ?: "تلقائي"), false) {
+            aspectIdx = (aspectIdx + 1) % aspects.size
+            try { mp.setAspectRatio(aspects[aspectIdx]) } catch (_: Throwable) {}
+            showHud("📐 " + (aspects[aspectIdx] ?: "تلقائي"))
+            panel?.dismiss()
+        })
+        inner.addView(stepper("تأخير الصوت", { try { mp.audioDelay } catch (_: Throwable) { 0L } }, { try { mp.setAudioDelay(it) } catch (_: Throwable) {} }))
+        inner.addView(stepper("تأخير الترجمة", { try { mp.spuDelay } catch (_: Throwable) { 0L } }, { try { mp.setSpuDelay(it) } catch (_: Throwable) {} }))
+        inner.addView(optionRow("🎚  الإيكولايزر (بيس / صوت أوضح)", eqIdx >= 0) { openEq() })
+        inner.addView(optionRow("😴  مؤقت النوم", sleepRun != null || sleepAtEnd) { openSleep() })
+        inner.addView(optionRow("🪟  صورة داخل صورة (PiP)", false) { enterPip() })
+        inner.addView(optionRow("↪  PiP تلقائي لما تخرج من التطبيق", autoPip) { autoPip = !autoPip; panel?.dismiss() })
+        inner.addView(optionRow("✨  إعدادات الذكاء الصناعي (المفتاح / الموديل)", false) { aiSettings() })
+        box.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        showPanel(box, 0.55f, 0.85f)
+    }
+
+    private fun openEq() {
+        val box = toolsBox("الإيكولايزر")
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inner.addView(optionRow("بدون", eqIdx == -1) {
+            eqIdx = -1
+            try { mp.setEqualizer(null) } catch (_: Throwable) {}
+            panel?.dismiss()
+        })
+        val n = try { MediaPlayer.Equalizer.getPresetCount() } catch (_: Throwable) { 0 }
+        for (i in 0 until n) {
+            val nm = try { MediaPlayer.Equalizer.getPresetName(i) } catch (_: Throwable) { "Preset $i" }
+            inner.addView(optionRow(nm, eqIdx == i) {
+                eqIdx = i
+                try { mp.setEqualizer(MediaPlayer.Equalizer.createFromPreset(i)) } catch (_: Throwable) {}
+                panel?.dismiss()
+            })
+        }
+        box.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        showPanel(box, 0.4f, 0.85f)
+    }
+
+    private fun openSleep() {
+        val box = toolsBox("مؤقت النوم")
+        box.addView(optionRow("إيقاف المؤقت", sleepRun == null && !sleepAtEnd) { setSleep(0); panel?.dismiss() })
+        intArrayOf(15, 30, 45, 60, 90).forEach { m ->
+            box.addView(optionRow("بعد $m دقيقة", false) { setSleep(m); panel?.dismiss() })
+        }
+        box.addView(optionRow("لحد نهاية الحلقة", sleepAtEnd) { setSleep(-1); panel?.dismiss() })
+        showPanel(box, 0.36f, null)
+    }
+
+    // ================= ترجمة ذكية بالذكاء الصناعي (Claude) =================
+    private class Cue(val start: String, val end: String, val text: String)
+
+    private fun aiPrefs() = getSharedPreferences("ai", MODE_PRIVATE)
+
+    private fun aiSettings() {
+        panel?.dismiss()
+        val p = aiPrefs()
+        val ll = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(8), dp(22), 0)
+        }
+        val keyEt = EditText(this).apply {
+            hint = "API Key"
+            setText(p.getString("key", ""))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine()
+        }
+        val urlEt = EditText(this).apply { hint = "Endpoint"; setText(p.getString("url", AI_URL)); setSingleLine() }
+        val modelEt = EditText(this).apply { hint = "Model"; setText(p.getString("model", AI_MODEL)); setSingleLine() }
+        ll.addView(keyEt); ll.addView(urlEt); ll.addView(modelEt)
+        AlertDialog.Builder(this)
+            .setTitle("إعدادات الذكاء الصناعي")
+            .setView(ll)
+            .setPositiveButton("حفظ") { _, _ ->
+                p.edit()
+                    .putString("key", keyEt.text.toString().trim())
+                    .putString("url", urlEt.text.toString().trim().ifEmpty { AI_URL })
+                    .putString("model", modelEt.text.toString().trim().ifEmpty { AI_MODEL })
+                    .apply()
+                Toast.makeText(this, "اتحفظت", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    /** بياخد ملف الترجمة الخارجي للحلقة، يترجمه عربي بدفعات متوازية، ويضيفه كمسار ترجمة جديد */
+    private fun aiTranslate() {
+        if (aiBusy) { Toast.makeText(this, "الترجمة شغالة بالفعل...", Toast.LENGTH_SHORT).show(); return }
+        val src = sub
+        if (src.isEmpty()) {
+            Toast.makeText(this, "مفيش ملف ترجمة خارجي للحلقة دي عشان أترجمه", Toast.LENGTH_LONG).show()
+            return
+        }
+        val p = aiPrefs()
+        val key = p.getString("key", "") ?: ""
+        if (key.isEmpty()) {
+            Toast.makeText(this, "حط مفتاح الـ API الأول", Toast.LENGTH_LONG).show()
+            aiSettings()
+            return
+        }
+        val url = p.getString("url", AI_URL) ?: AI_URL
+        val model = p.getString("model", AI_MODEL) ?: AI_MODEL
+        val vid = curUrl
+        val out = File(cacheDir, "ai_" + Integer.toHexString(src.hashCode()) + ".srt")
+        if (out.exists() && out.length() > 0) { attachAiSub(out); return }
+        aiBusy = true
+        showHud("🤖 بقرا الترجمة...", 0L)
+        Thread {
+            var pool: java.util.concurrent.ExecutorService? = null
+            try {
+                val cues = parseCues(readSubText(src))
+                if (cues.isEmpty()) throw IllegalStateException("ملف الترجمة فاضي أو مش مفهوم")
+                val sample = cues.take(200).joinToString(" ") { it.text }
+                val letters = sample.count { it.isLetter() }
+                val arabic = sample.count { it in '\u0600'..'\u06FF' }
+                if (letters > 0 && arabic * 10 > letters * 6) {
+                    runOnUiThread {
+                        aiBusy = false
+                        hud?.visibility = View.GONE
+                        Toast.makeText(this, "الترجمة عربي أصلًا", Toast.LENGTH_LONG).show()
+                    }
+                    return@Thread
+                }
+                val total = minOf(cues.size, 4000)
+                val size = 40
+                val nBatches = (total + size - 1) / size
+                val tr = arrayOfNulls<String>(cues.size)
+                val done = AtomicInteger(0)
+                val failed = AtomicInteger(0)
+                val lastErr = java.util.concurrent.atomic.AtomicReference("")
+                val ex = Executors.newFixedThreadPool(4)
+                pool = ex
+                val futures = (0 until nBatches).map { bi ->
+                    ex.submit(Callable {
+                        val from = bi * size
+                        val to = minOf(from + size, total)
+                        try {
+                            val res = aiBatch(url, key, model, cues, from, to)
+                            for ((i, t) in res) tr[i] = t
+                        } catch (e: Exception) {
+                            failed.incrementAndGet()
+                            lastErr.set(e.message ?: e.javaClass.simpleName)
+                        }
+                        val c = done.incrementAndGet()
+                        runOnUiThread { if (!isDestroyed) showHud("🤖 بترجم... $c/$nBatches", 0L) }
+                    })
+                }
+                futures.forEach { it.get() }
+                if (failed.get() >= nBatches) throw IllegalStateException(lastErr.get())
+                val sb = StringBuilder()
+                for ((i, c) in cues.withIndex()) {
+                    sb.append(i + 1).append('\n').append(c.start).append(" --> ").append(c.end).append('\n')
+                        .append(tr[i] ?: c.text).append("\n\n")
+                }
+                out.writeText(sb.toString(), Charsets.UTF_8)
+                val nf = failed.get()
+                runOnUiThread {
+                    aiBusy = false
+                    if (isDestroyed) return@runOnUiThread
+                    hud?.visibility = View.GONE
+                    if (curUrl == vid) attachAiSub(out)
+                    if (nf > 0) Toast.makeText(this, "تنبيه: $nf دفعة فشلت وفضلت بلغتها الأصلية", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                val msg = e.message ?: e.javaClass.simpleName
+                runOnUiThread {
+                    aiBusy = false
+                    if (isDestroyed) return@runOnUiThread
+                    hud?.visibility = View.GONE
+                    Toast.makeText(this, "فشلت الترجمة الذكية: $msg", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                pool?.shutdown()
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun attachAiSub(f: File) {
+        try {
+            mp.addSlave(0, Uri.fromFile(f), true)
+            Toast.makeText(this, "✨ اتضافت الترجمة العربية الذكية", Toast.LENGTH_LONG).show()
+        } catch (_: Throwable) {
+            Toast.makeText(this, "تعذّر إضافة الترجمة", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun readSubText(src: String): String {
+        val bytes: ByteArray = if (src.startsWith("http")) {
+            val c = URL(src).openConnection() as HttpURLConnection
+            try {
+                c.connectTimeout = 15000
+                c.readTimeout = 30000
+                c.inputStream.use { it.readBytes() }
+            } finally { c.disconnect() }
+        } else {
+            contentResolver.openInputStream(Uri.parse(src))?.use { it.readBytes() } ?: throw IllegalStateException("مش قادر أقرا الترجمة")
+        }
+        var t = String(bytes, Charsets.UTF_8)
+        if (t.contains('\uFFFD')) t = String(bytes, charset("windows-1256"))
+        return t.removePrefix("\uFEFF")
+    }
+
+    private val tsRe = Regex("""((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})""")
+
+    private fun parseCues(raw: String): List<Cue> {
+        val out = ArrayList<Cue>()
+        val blocks = raw.replace("\r\n", "\n").replace('\r', '\n').split(Regex("\n\\s*\n"))
+        for (b in blocks) {
+            val lines = b.split('\n')
+            val ti = lines.indexOfFirst { it.contains("-->") }
+            if (ti < 0) continue
+            val m = tsRe.find(lines[ti]) ?: continue
+            val text = lines.drop(ti + 1).joinToString("\n").trim()
+            if (text.isEmpty()) continue
+            out.add(Cue(normTs(m.groupValues[1]), normTs(m.groupValues[2]), text))
+        }
+        return out
+    }
+
+    private fun normTs(t: String): String {
+        val parts = t.replace(',', '.').split(':')
+        val hh = if (parts.size == 3) parts[0].toInt() else 0
+        val mm = parts[parts.size - 2].toInt()
+        val sm = parts[parts.size - 1].split('.')
+        val ms = ((sm.getOrNull(1) ?: "0") + "00").take(3)
+        return "%02d:%02d:%02d,%s".format(hh, mm, sm[0].toInt(), ms)
+    }
+
+    /** بيترجم دفعة واحدة (from until to) ويرجّع (رقم السطر ← النص العربي) */
+    private fun aiBatch(url: String, key: String, model: String, cues: List<Cue>, from: Int, to: Int): List<Pair<Int, String>> {
+        val user = StringBuilder()
+        for (i in from until to) user.append(i).append('|').append(cues[i].text.replace("\n", " ⏎ ")).append('\n')
+        val system = "You translate movie and TV subtitles into natural, easy-to-read Arabic (simple Modern Standard Arabic, " +
+            "short lines, keep names and tone). Each input line is `N|text`. Reply with ONLY the translated lines in the exact " +
+            "same format `N|arabic text`, one per input line, same N, nothing else. The symbol ⏎ is a line break: keep it. " +
+            "Keep tags like <i> intact. Translate faithfully."
+        val body = JSONObject()
+            .put("model", model)
+            .put("max_tokens", 4096)
+            .put("system", system)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", user.toString())))
+            .toString()
+        val resp = JSONObject(httpPost(url, key, body))
+        val arr = resp.getJSONArray("content")
+        val txt = StringBuilder()
+        for (k in 0 until arr.length()) {
+            val o = arr.getJSONObject(k)
+            if (o.optString("type") == "text") txt.append(o.optString("text"))
+        }
+        val line = Regex("^\\s*(\\d+)\\s*\\|(.*)$")
+        val res = ArrayList<Pair<Int, String>>()
+        for (l in txt.toString().split('\n')) {
+            val m = line.find(l) ?: continue
+            val idx = m.groupValues[1].toInt()
+            if (idx in from until to) res.add(idx to m.groupValues[2].trim().replace(" ⏎ ", "\n").replace("⏎", "\n"))
+        }
+        return res
+    }
+
+    private fun httpPost(urlStr: String, key: String, body: String): String {
+        var lastCode = 0
+        for (attempt in 0..2) {
+            val c = URL(urlStr).openConnection() as HttpURLConnection
+            try {
+                c.requestMethod = "POST"
+                c.connectTimeout = 15000
+                c.readTimeout = 90000
+                c.doOutput = true
+                c.setRequestProperty("content-type", "application/json")
+                c.setRequestProperty("x-api-key", key)
+                c.setRequestProperty("anthropic-version", "2023-06-01")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = c.responseCode
+                if (code in 200..299) return c.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                lastCode = code
+                val err = try { c.errorStream?.bufferedReader()?.use { it.readText() } } catch (_: Throwable) { null }
+                if (code == 429 || code >= 500) { Thread.sleep(1500L * (attempt + 1)); continue }
+                throw java.io.IOException("HTTP $code " + (err ?: "").take(160))
+            } finally {
+                c.disconnect()
+            }
+        }
+        throw java.io.IOException("HTTP $lastCode")
+    }
+
     // ================= ريموت / كيبورد (تلفزيون) =================
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (locked && e.keyCode != KeyEvent.KEYCODE_BACK && e.keyCode != KeyEvent.KEYCODE_VOLUME_UP &&
+            e.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN && e.keyCode != KeyEvent.KEYCODE_VOLUME_MUTE) {
+            if (e.action == KeyEvent.ACTION_DOWN) showLockBtn()
+            return true
+        }
         if (e.action == KeyEvent.ACTION_DOWN && panel == null) {
             when (e.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> { togglePlay(); return true }
@@ -1094,6 +1709,7 @@ class PlayerActivity : AppCompatActivity() {
 
     // ================= دورة الحياة =================
     private fun loadMedia(url: String, startIntent: Int) {
+        picked = false
         cast?.let { dv ->
             if (url.startsWith("http")) {
                 castPos = startIntent.toLong(); castLen = 0; castFired = false
@@ -1124,7 +1740,7 @@ class PlayerActivity : AppCompatActivity() {
             pfd = fd
             if (fd != null) Media(vlc, fd.fileDescriptor) else Media(vlc, u)
         } else Media(vlc, u)
-        m.setHWDecoderEnabled(true, false)
+        m.setHWDecoderEnabled(hwOn, false)
         var st = startIntent
         // استكمال المشاهدة: آخر موضع محفوظ (من المشغّل المحلي أو من متابعة البث على التلفزيون)
         if (st <= 0) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
@@ -1140,7 +1756,7 @@ class PlayerActivity : AppCompatActivity() {
         CastService.uiAttached = true
         if (!started) {
             started = true
-            val url = intent.getStringExtra("url") ?: return finish()
+            val url = intent.getStringExtra("url") ?: intent.data?.toString() ?: return finish()
             curUrl = url
             val cs = CastService.dev
             if (CastService.active && cs != null && CastService.url == url) {
@@ -1185,6 +1801,9 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         h.removeCallbacks(waitTimeout)
+        h.removeCallbacks(hudHide)
+        h.removeCallbacks(lockHide)
+        sleepRun?.let { h.removeCallbacks(it) }
         if (inst === this) inst = null
         // البث بيفضل شغال حتى بعد قفل المشغّل (CastService بيكمّل متابعته). بيتوقف من زرار «إيقاف البث»
         // أو من إشعار الخدمة أو من ريموت التلفزيون.
