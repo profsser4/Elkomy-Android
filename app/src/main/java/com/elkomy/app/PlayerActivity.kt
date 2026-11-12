@@ -58,6 +58,7 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
         const val SPEED = 6
         const val ZOOM = 7
         const val CAST = 8
+        const val DL = 9
         private val D = arrayOf(
             "M8 5v14l11-7z",
             "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
@@ -67,7 +68,8 @@ class IconView(ctx: Context, kind: Int) : View(ctx) {
             "M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z",
             "M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z",
             "M19 12h-2v3h-3v2h5v-5zM7 9h3V7H5v5h2V9zm14-6H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.99h18v14.02z",
-            "M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"
+            "M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z",
+            "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
         )
     }
 
@@ -142,6 +144,7 @@ class PlayerActivity : AppCompatActivity() {
     private var nextLbl: TextView? = null
     private var nextTime: TextView? = null
     private var nextItem: LinearLayout? = null
+    private var dlItem: LinearLayout? = null
     private var skipStopReport = false
 
     // قايمة تشغيل محلية (حلقات اتحمّلت): لما الحلقة تخلص بتفتح اللي بعدها لوحدها
@@ -465,6 +468,10 @@ class PlayerActivity : AppCompatActivity() {
             addView(labeled(IconView.ZOOM, "حجم الصورة") { toggleZoom() })
             addView(labeled(IconView.SUBS, "الصوت والترجمة") { openTracks() })
             addView(labeled(IconView.CAST, "بث") { openCast() })
+            // زرار «تحميل»: بيطلب من الصفحة تحمّل الفيديو الحالي (مش بيظهر للملفات المحمّلة أصلًا على الموبايل)
+            val di = labeled(IconView.DL, "تحميل") { startDownload() }
+            dlItem = di
+            addView(di)
             // زرار ثابت للحلقة التالية (بيظهر أول ما الصفحة تبلّغ برقمها)
             val ni = labeled(IconView.PLAY, "الحلقة التالية") { goNext() }
             ni.visibility = View.GONE
@@ -568,6 +575,11 @@ class PlayerActivity : AppCompatActivity() {
                 if (ni.visibility != View.VISIBLE) ni.visibility = View.VISIBLE
             } else if (ni.visibility != View.GONE) ni.visibility = View.GONE
         }
+        dlItem?.let { di ->
+            val local = curUrl.startsWith("content:") || curUrl.startsWith("file:")
+            val want = if (local) View.GONE else View.VISIBLE
+            if (di.visibility != want) di.visibility = want
+        }
         // الزرار الكبير بالعدّاد: آخر 250 ثانية، فوق الواجهة (ظاهر حتى لو الأزرار مخفية)
         if (nextLabel.isNotEmpty() && left in 1L..250L) {
             nextLbl?.text = nextLabel
@@ -595,6 +607,25 @@ class PlayerActivity : AppCompatActivity() {
         if (cast == null) mp.play()
         Toast.makeText(this, "▶ " + titleText, Toast.LENGTH_SHORT).show()
         showUi()
+    }
+
+    /** تحميل الفيديو الحالي: الصفحة (window.nativeDownload) هي اللي بتعرف الرابط الأصلي وبتبدأ التحميل في التطبيق */
+    private fun startDownload() {
+        if (curUrl.startsWith("content:") || curUrl.startsWith("file:")) {
+            Toast.makeText(this, "الملف ده متحمّل على الموبايل أصلًا", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val web = MainActivity.inst?.web
+        if (web == null) {
+            Toast.makeText(this, "تعذّر بدء التحميل", Toast.LENGTH_SHORT).show()
+            return
+        }
+        web.evaluateJavascript("(window.nativeDownload?nativeDownload():false)") { r ->
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (r == "true") Toast.makeText(this, "⬇️ بدأ التحميل — تابعه من زرار التحميلات", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun goNext() {
