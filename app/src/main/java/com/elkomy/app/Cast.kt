@@ -2,6 +2,7 @@ package com.elkomy.app
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.PowerManager
 import android.util.Base64
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -35,6 +36,12 @@ object Dlna {
 
     /** آخر سبب فشل (للعرض) — فاضي لو كله تمام */
     @Volatile var lastError: String = ""
+
+    /**
+     * true = التلفزيون بيجيب الفيديو من الموبايل (بروكسي) → لازم الموبايل يفضل على نفس الواي فاي.
+     * false = التلفزيون بيفتح الرابط مباشرة من الإنترنت → تقدر تقفل الموبايل أو تمشي براحتك.
+     */
+    @Volatile var viaProxy: Boolean = false
 
     /** بيدوّر على الشاشات (٥ ثواني) ويبلّغ عن كل شاشة تتلاقي. onDone بيتنادى في الآخر. */
     fun discover(ctx: Context, onFound: (Dev) -> Unit, onDone: () -> Unit) {
@@ -233,8 +240,11 @@ object Dlna {
     }
 
     /** يبعت الفيديو للتلفزيون ويشغّله (ويكمّل من startSec). لازم يتنادى من thread خلفي. */
-    fun start(d: Dev, url: String, title: String, startSec: Int): Boolean {
+    private class Attempt(val url: String, val mime: String, val meta: Boolean, val proxy: Boolean)
+
+    fun start(d: Dev, url: String, title: String, startSec: Int, ctx: Context? = null): Boolean {
         lastError = ""
+        viaProxy = false
         Proxy.last = ""
         Proxy.hits = 0
         val res = resolve(url)
@@ -242,39 +252,62 @@ object Dlna {
         val hls = m1.contains("mpegurl")
 
         val ip = localIp(d)
-        val port = try { Proxy.ensure() } catch (t: Throwable) { lastError = "proxy: ${t.javaClass.simpleName}"; -1 }
 
-        // (رابط، نوع، مع ميتاداتا؟) — كل تلفزيون بيقبل شكل مختلف فبنجرّب بالترتيب
-        val attempts = ArrayList<Triple<String, String, Boolean>>()
-        if (ip != null && port > 0) {
-            val host = "$ip:$port"
-            attempts += Triple(Proxy.urlFor(url, extFor(m1), host), m1, true)
-            if (!hls && m1 != "video/mp4") attempts += Triple(Proxy.urlFor(url, "mp4", host), "video/mp4", true)
-            attempts += Triple(Proxy.urlFor(url, extFor(m1), host), m1, false)
+        // الترتيب: 1) رابط مباشر (التلفزيون بيجيب من الإنترنت — مبيحتاجش الموبايل خالص)
+        //          2) لو التلفزيون رفضه (https / redirects / headers) نرجع للبروكسي على الموبايل
+        val attempts = ArrayList<Attempt>()
+        attempts += Attempt(res.url, m1, true, false)
+
+        var proxyReady = false
+        fun prepareProxy() {
+            if (proxyReady) return
+            proxyReady = true
+            val port = try { Proxy.ensure() } catch (t: Throwable) { lastError = "proxy: ${t.javaClass.simpleName}"; -1 }
+            if (ip != null && port > 0) {
+                val host = "$ip:$port"
+                attempts += Attempt(Proxy.urlFor(url, extFor(m1), host), m1, true, true)
+                if (!hls && m1 != "video/mp4") attempts += Attempt(Proxy.urlFor(url, "mp4", host), "video/mp4", true, true)
+                attempts += Attempt(Proxy.urlFor(url, extFor(m1), host), m1, false, true)
+            }
         }
-        // احتياطي: الرابط المباشر من غير بروكسي
-        attempts += Triple(res.url, m1, true)
 
         soap(d.ctrl, "Stop", "")
         try { Thread.sleep(400) } catch (_: InterruptedException) {}
-        for ((u, m, meta) in attempts) {
-            if (!setAndPlay(d, u, title, m, meta)) continue
+        var i = 0
+        while (true) {
+            if (i >= attempts.size) {
+                if (!proxyReady) { prepareProxy(); if (i >= attempts.size) break } else break
+            }
+            val a = attempts[i++]
+            if (!setAndPlay(d, a.url, title, a.mime, a.meta)) continue
             if (startSec > 5) {
-                for (i in 0 until 10) {
+                for (k in 0 until 10) {
                     if (soap(d.ctrl, "Seek", "<Unit>REL_TIME</Unit><Target>${hms(startSec.toLong())}</Target>") != null) break
                     try { Thread.sleep(1000) } catch (_: InterruptedException) { break }
                 }
             }
             lastError = ""
+            viaProxy = a.proxy
+            if (a.proxy) {
+                // البث شغال عن طريق الموبايل: نمنع النوم عشان الشاشة لو اتقفلت يفضل شغال
+                if (ctx != null) Proxy.hold(ctx)
+            } else {
+                // مباشر: مش محتاجين سيرفر الموبايل
+                Proxy.stop()
+            }
             return true
         }
-        lastError = "$lastError | phone=$ip:$port tvRequests=${Proxy.hits} ${Proxy.last}".trim()
+        Proxy.stop()
+        lastError = "$lastError | phone=$ip tvRequests=${Proxy.hits} ${Proxy.last}".trim()
         return false
     }
 
+    /** حالة التشغيل في التلفزيون (PLAYING / PAUSED_PLAYBACK / STOPPED ...) أو null لو مردّش */
+    fun transportState(d: Dev): String? = state(d)
+
     fun resume(d: Dev) { soap(d.ctrl, "Play", "<Speed>1</Speed>") }
     fun pause(d: Dev) { soap(d.ctrl, "Pause", "") }
-    fun stop(d: Dev) { soap(d.ctrl, "Stop", "") }
+    fun stop(d: Dev) { soap(d.ctrl, "Stop", ""); viaProxy = false; Proxy.stop() }
     fun seek(d: Dev, sec: Long) {
         soap(d.ctrl, "Seek", "<Unit>REL_TIME</Unit><Target>${hms(sec)}</Target>")
     }
@@ -312,7 +345,38 @@ object Dlna {
             return n.localPort
         }
 
-        @Synchronized fun stop() { try { ss?.close() } catch (_: Throwable) {}; ss = null }
+        @Synchronized fun stop() { try { ss?.close() } catch (_: Throwable) {}; ss = null; unhold() }
+
+        // أقفال عشان البروكسي يفضل شغال والشاشة مقفولة (محتاج صلاحية WAKE_LOCK في الـ Manifest)
+        private var wl: PowerManager.WakeLock? = null
+        private var wfl: WifiManager.WifiLock? = null
+
+        @Synchronized fun hold(ctx: Context) {
+            val app = ctx.applicationContext
+            try {
+                if (wl == null) {
+                    val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "elkomy:cast").apply {
+                        setReferenceCounted(false); acquire(6 * 60 * 60 * 1000L)
+                    }
+                }
+            } catch (_: Throwable) {}
+            try {
+                if (wfl == null) {
+                    val wm = app.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                    @Suppress("DEPRECATION")
+                    wfl = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "elkomy:cast").apply {
+                        setReferenceCounted(false); acquire()
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        @Synchronized fun unhold() {
+            try { wl?.let { if (it.isHeld) it.release() } } catch (_: Throwable) {}
+            try { wfl?.let { if (it.isHeld) it.release() } } catch (_: Throwable) {}
+            wl = null; wfl = null
+        }
 
         private fun b64(s: String) =
             Base64.encodeToString(s.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)

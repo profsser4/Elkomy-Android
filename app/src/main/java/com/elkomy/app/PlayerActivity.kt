@@ -968,18 +968,30 @@ class PlayerActivity : AppCompatActivity() {
         val url = curUrl
         val tt = titleText
         Thread {
-            val ok = Dlna.start(d, url, tt, pos.toInt())
+            val ok = Dlna.start(d, url, tt, pos.toInt(), applicationContext)
             if (!ok) runOnUiThread {
                 Toast.makeText(this, "التلفزيون رفض الرابط أو مش بيرد\n" + Dlna.lastError, Toast.LENGTH_LONG).show()
                 stopCast()
-            }
+            } else runOnUiThread { castNotice(); CastService.begin(this, d, url, tt, pos) }
         }.start()
         startPoll()
+    }
+
+    /** بيعرّف المستخدم البث شغال إزاي (مباشر ولا عن طريق الموبايل) */
+    private fun castNotice() {
+        if (isDestroyed || cast == null) return
+        if (Dlna.viaProxy) {
+            castLabel?.text = "📺  " + (cast?.name ?: "") + "  (عن طريق الموبايل)"
+            Toast.makeText(this, "البث شغال عن طريق الموبايل: سيب التطبيق مفتوح والموبايل على نفس الواي فاي", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, "البث مباشر من الإنترنت: تقدر تقفل الموبايل أو تخرج وهيفضل شغال", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun stopDlnaOnly() {
         val d = cast ?: return
         cast = null
+        CastService.end(this)
         Thread { Dlna.stop(d) }.start()
     }
 
@@ -988,8 +1000,13 @@ class PlayerActivity : AppCompatActivity() {
         if (d != null) {
             val pos = castPos
             cast = null
+            CastService.end(this)
             Thread { Dlna.stop(d) }.start()
-            try { mp.setTime(pos * 1000); mp.play() } catch (_: Throwable) {}
+            try {
+                // لو رجعنا للمشغّل بعد ما قفلناه والبث شغال، المشغّل المحلي مفيهوش فيديو لسه
+                if (mp.media == null) loadMedia(curUrl, pos.toInt()) else mp.setTime(pos * 1000)
+                mp.play()
+            } catch (_: Throwable) {}
         } else if (renderer != null) {
             val pos = mp.time / 1000
             renderer = null
@@ -1054,17 +1071,18 @@ class PlayerActivity : AppCompatActivity() {
                 waitLayer?.visibility = View.GONE
                 val tt = titleText
                 Thread {
-                    val ok = Dlna.start(dv, url, tt, startIntent)
+                    val ok = Dlna.start(dv, url, tt, startIntent, applicationContext)
                     if (!ok) runOnUiThread {
                         Toast.makeText(this, "التلفزيون رفض الرابط\n" + Dlna.lastError, Toast.LENGTH_LONG).show()
                         stopCast()
-                    }
+                    } else runOnUiThread { castNotice(); CastService.begin(this, dv, url, tt, startIntent.toLong()) }
                 }.start()
                 showUi()
                 return
             } else {
                 // ملف محمّل على الموبايل: التلفزيون مش هيوصله، نرجع نشغّله محليًا
                 cast = null
+                CastService.end(this)
                 Thread { Dlna.stop(dv) }.start()
                 castLabel?.visibility = View.GONE
             }
@@ -1076,9 +1094,9 @@ class PlayerActivity : AppCompatActivity() {
             if (fd != null) Media(vlc, fd.fileDescriptor) else Media(vlc, u)
         } else Media(vlc, u)
         m.setHWDecoderEnabled(true, false)
-        val local = u.scheme == "content" || u.scheme == "file"
         var st = startIntent
-        if (st <= 0 && local) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
+        // استكمال المشاهدة: آخر موضع محفوظ (من المشغّل المحلي أو من متابعة البث على التلفزيون)
+        if (st <= 0) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
         if (st > 5) m.addOption(":start-time=$st")
         if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000") }
         mp.media = m
@@ -1088,11 +1106,24 @@ class PlayerActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         mp.attachViews(video, null, false, false)
+        CastService.uiAttached = true
         if (!started) {
             started = true
             val url = intent.getStringExtra("url") ?: return finish()
             curUrl = url
-            loadMedia(url, intent.getIntExtra("start", 0))
+            val cs = CastService.dev
+            if (CastService.active && cs != null && CastService.url == url) {
+                // رجعنا لنفس الفيديو والبث لسه شغال على التلفزيون: نكمّل تحكّم فيه من غير ما نعيد التشغيل
+                cast = cs
+                castPos = CastService.pos
+                castLen = CastService.len
+                castPlaying = CastService.playing
+                castFired = false
+                castSince = System.currentTimeMillis()
+                castLabel?.text = "📺  " + cs.name
+                castLabel?.visibility = View.VISIBLE
+                startPoll()
+            } else loadMedia(url, intent.getIntExtra("start", 0))
         }
         if (cast == null) mp.play()
         h.post(tick)
@@ -1100,15 +1131,17 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        CastService.uiAttached = false
         h.removeCallbacks(tick)
         h.removeCallbacks(hideRun)
         panel?.dismiss()
         if (!skipStopReport && !waiting) report(false)
         try {
             val url = curUrl
-            val len = mp.length / 1000
-            if ((url.startsWith("content:") || url.startsWith("file:")) && len > 0) {
-                val pos = mp.time / 1000
+            val c = cast
+            val len = if (c != null) castLen else mp.length / 1000
+            if ((url.startsWith("content:") || url.startsWith("file:") || url.startsWith("http")) && len > 0) {
+                val pos = if (c != null) castPos else mp.time / 1000
                 val e = getSharedPreferences("pos", MODE_PRIVATE).edit()
                 if (pos > len * 0.95) e.remove("p:$url") else e.putInt("p:$url", pos.toInt())
                 e.apply()
@@ -1122,7 +1155,8 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         h.removeCallbacks(waitTimeout)
         if (inst === this) inst = null
-        if (isFinishing) cast?.let { dv -> Thread { Dlna.stop(dv) }.start() }
+        // البث بيفضل شغال حتى بعد قفل المشغّل (CastService بيكمّل متابعته). بيتوقف من زرار «إيقاف البث»
+        // أو من إشعار الخدمة أو من ريموت التلفزيون.
         try { rd?.stop(); rd?.release() } catch (_: Throwable) {}
         rItems.forEach { try { it.release() } catch (_: Throwable) {} }
         mp.release()
