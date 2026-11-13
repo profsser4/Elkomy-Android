@@ -6,12 +6,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.WindowManager
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.LinearLayout
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -53,6 +55,11 @@ object UpdateManager {
             .setNegativeButton("بعدين", null).show()
     }
 
+    private fun keepOn(a: Activity, on: Boolean) {
+        if (on) a.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else a.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
     private fun download(a: Activity, url: String) {
         if (busy) return
         // أندرويد 8+: لازم إذن «تثبيت تطبيقات غير معروفة» للتطبيق ده مرة واحدة
@@ -71,41 +78,66 @@ object UpdateManager {
         }
         val dlg = AlertDialog.Builder(a).setTitle("تحديث التطبيق").setView(box).setCancelable(false).create()
         dlg.show()
+        keepOn(a, true)
         Thread {
             try {
                 val dir = File(a.cacheDir, "updates").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
                 val f = File(dir, "update.apk")
-                var u = url
-                var c: HttpURLConnection
-                var hops = 0
-                while (true) {
-                    c = URL(u).openConnection() as HttpURLConnection
-                    c.instanceFollowRedirects = false
-                    c.connectTimeout = 15000; c.readTimeout = 30000
-                    val code = c.responseCode
-                    if (code in 300..399 && hops++ < 6) { u = URL(URL(u), c.getHeaderField("Location")).toString(); c.disconnect(); continue }
-                    if (code !in 200..299) throw Exception("HTTP $code")
-                    break
-                }
-                val total = c.contentLengthLong
+                var total = -1L
                 var done = 0L
                 var lastP = -1
-                c.inputStream.use { i -> f.outputStream().use { o ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val r = i.read(buf); if (r < 0) break
-                        o.write(buf, 0, r); done += r
-                        if (total > 0) {
-                            val p = (done * 100 / total).toInt()
-                            if (p != lastP) { lastP = p; a.runOnUiThread { bar.progress = p; tv.text = "بنزّل التحديث... $p%" } }
+                var fails = 0
+                while (true) {
+                    try {
+                        var u = url
+                        var c: HttpURLConnection
+                        var hops = 0
+                        while (true) {
+                            c = URL(u).openConnection() as HttpURLConnection
+                            c.instanceFollowRedirects = false
+                            c.connectTimeout = 20000; c.readTimeout = 60000
+                            if (done > 0) c.setRequestProperty("Range", "bytes=$done-")
+                            val code = c.responseCode
+                            if (code in 300..399 && hops++ < 6) {
+                                u = URL(URL(u), c.getHeaderField("Location")).toString()
+                                c.disconnect(); continue
+                            }
+                            if (code !in 200..299) throw Exception("HTTP $code")
+                            break
                         }
+                        // 206 = السيرفر كمّل من المكان اللي وقفنا عنده، غير كده نبدأ من الأول
+                        val append = c.responseCode == 206 && done > 0
+                        if (!append) { done = 0; total = c.contentLengthLong }
+                        FileOutputStream(f, append).use { o ->
+                            c.inputStream.use { i ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    val r = i.read(buf); if (r < 0) break
+                                    o.write(buf, 0, r); done += r
+                                    if (total > 0) {
+                                        val p = (done * 100 / total).toInt()
+                                        if (p != lastP) {
+                                            lastP = p
+                                            a.runOnUiThread { bar.progress = p; tv.text = "بنزّل التحديث... $p%" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (total > 0 && done < total) throw Exception("الملف وصل ناقص")
+                        break
+                    } catch (e: Exception) {
+                        if (++fails > 15) throw e
+                        Thread.sleep(2000)
                     }
-                } }
-                if (total > 0 && done < total) throw Exception("الملف وصل ناقص")
-                a.runOnUiThread { dlg.dismiss(); busy = false; install(a, f) }
+                }
+                a.runOnUiThread { keepOn(a, false); dlg.dismiss(); busy = false; install(a, f) }
             } catch (e: Exception) {
                 busy = false
-                a.runOnUiThread { dlg.dismiss(); Toast.makeText(a, "فشل التحديث: ${e.message}", Toast.LENGTH_LONG).show() }
+                a.runOnUiThread {
+                    keepOn(a, false); dlg.dismiss()
+                    Toast.makeText(a, "فشل التحديث: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }.start()
     }
