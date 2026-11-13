@@ -1692,10 +1692,11 @@ class PlayerActivity : AppCompatActivity() {
                     if (force || (!vlcSubChosen && pref != "off" && !arAudio)) enableOwn(false) else disableOwn()
                     onLoaded?.invoke()
                 }
-            } catch (_: Throwable) {
+            } catch (ex: Throwable) {
                 // لو القراءة فشلت: نرجع للطريقة القديمة (VLC بيرسمها)
                 runOnUiThread {
                     if (!isDestroyed && id == subLoadId) {
+                        if (force) Toast.makeText(this, "❌ الترجمة ماتحمّلتش: " + (ex.message ?: ex.javaClass.simpleName).take(80), Toast.LENGTH_LONG).show()
                         try { mp.addSlave(0, Uri.parse(src), true) } catch (_: Throwable) {}
                     }
                 }
@@ -1910,7 +1911,10 @@ class PlayerActivity : AppCompatActivity() {
         syncDone = false
         syncGen++
         syncBusy = false
-        if (byUser) getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", "own").apply()
+        if (byUser) {
+            getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", "own").apply()
+            Toast.makeText(this, "⏳ بحمّل الترجمة...", Toast.LENGTH_SHORT).show()
+        }
         loadOwnSub(s0.url, byUser, 0.0, 1.0) { autoSyncLater() }
     }
 
