@@ -154,6 +154,9 @@ class PlayerActivity : AppCompatActivity() {
     private var started = false
     private var n = 0
     private var sub = ""
+    private var freshStart = false     // «من الأول»: تجاهل المكان المحفوظ وابدأ من صفر
+    private var subOffNow = false       // إيقاف الترجمة لليوم ده بس (مش بيتحفظ، عشان ما يقفلش الترجمة على كل الأفلام)
+    @Volatile private var lastHttp = ""
     private var subAdded = false
     private var titleText = ""
     private var pfd: ParcelFileDescriptor? = null
@@ -346,6 +349,12 @@ class PlayerActivity : AppCompatActivity() {
         }
         val raw = intent.getStringExtra("title") ?: intent.data?.lastPathSegment ?: ""
         parseRaw(raw)
+        // تنضيف اختيارات قديمة كانت بتقفل الترجمة العربي على كل الأفلام (إيقاف / اسم مسار مدمج)
+        try {
+            val spf = getSharedPreferences("pos", MODE_PRIVATE)
+            val v0 = spf.getString("sub_pref", null)
+            if (v0 != null && v0 != "own") spf.edit().remove("sub_pref").apply()
+        } catch (_: Throwable) {}
         plUrls = intent.getStringArrayExtra("pl_urls") ?: emptyArray()
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
@@ -783,7 +792,7 @@ class PlayerActivity : AppCompatActivity() {
         plIdx++
         titleText = plTitles[plIdx]
         tvTitle?.text = titleText
-        sub = ""; pack = null; subAdded = false; n = 0; hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
+        sub = ""; pack = null; subAdded = false; subOffNow = false; freshStart = false; n = 0; hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
         clearOwn()
         nextBtn?.visibility = View.GONE
         nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
@@ -848,6 +857,7 @@ class PlayerActivity : AppCompatActivity() {
     fun swapTo(url: String, raw: String, startSec: Int) {
         h.removeCallbacks(waitTimeout)
         parseRaw(raw)
+        subOffNow = false
         tvTitle?.text = titleText
         subAdded = false
         clearOwn()
@@ -944,23 +954,16 @@ class PlayerActivity : AppCompatActivity() {
         h.postDelayed(r, 600)
     }
 
-    /** بيفتكر اختيارك الأخير للترجمة، وإلا بيختار العربي لوحده لو موجود */
+    /** الترجمة الخارجية العربي (من السيرفر) هي الأولى دايمًا؛ وإلا بنختار مسار عربي مدمج لو موجود */
     private fun autoPickTracks() {
         if (isDestroyed || cast != null) return
         try {
             audioPolicy()
-            if (arAudio) return
-            val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
-            if (pref == "own" && ownOn) return
-            // لو فيه ترجمة خارجية جاهزة (بتتعرض بخط التطبيق من غير مربعات) نفضّلها على المدمجة، إلا لو إنت اخترت مدمجة بنفسك
-            if (ownCues.isNotEmpty() && (pref == null || pref == "own")) { if (!ownOn) enableOwn(false); return }
-            if (pref == "off") { vlcSubChosen = true; disableOwn(); try { mp.setSpuTrack(-1) } catch (_: Throwable) {}; return }
+            if (arAudio || subOffNow) return
+            if (ownCues.isNotEmpty()) { if (!ownOn) enableOwn(false); return }
             val spu = mp.spuTracks ?: return
             if (spu.isEmpty()) return
-            val ar = Regex("(^|[\\s\\[(-])(ar|ara)([\\s\\])-]|$)", RegexOption.IGNORE_CASE)
-            fun isAr(n: String) = n.contains("arab", true) || n.contains("عرب") || ar.containsMatchIn(n)
-            val cand = spu.firstOrNull { it.id != -1 && pref != null && it.name == pref }
-                ?: spu.firstOrNull { it.id != -1 && isAr(it.name) }
+            val cand = spu.firstOrNull { it.id != -1 && isArName(it.name) }
             if (cand != null) {
                 vlcSubChosen = true
                 if (mp.spuTrack != cand.id) mp.setSpuTrack(cand.id)
@@ -1688,8 +1691,7 @@ class PlayerActivity : AppCompatActivity() {
                     xScale = sc
                     ownDelayUs = 0L
                     rebuildOwn()
-                    val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
-                    if (force || (!vlcSubChosen && pref != "off" && !arAudio)) enableOwn(false) else disableOwn()
+                    if (force || (!vlcSubChosen && !subOffNow && !arAudio)) enableOwn(false) else disableOwn()
                     onLoaded?.invoke()
                 }
             } catch (ex: Throwable) {
@@ -1712,6 +1714,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun enableOwn(save: Boolean = true) {
         if (ownCues.isEmpty()) return
         ownOn = true
+        subOffNow = false
         vlcSubChosen = false
         ownIdx = -1
         ownShown = -2
@@ -1808,7 +1811,9 @@ class PlayerActivity : AppCompatActivity() {
     private var fixRun: Runnable? = null
     private var subFailed = false
 
-    private fun parseRaw(raw: String) {
+    private fun parseRaw(raw0: String) {
+        freshStart = raw0.contains("\n@@FRESH@@")
+        val raw = raw0.replace("\n@@FRESH@@", "")
         val a = raw.substringAfter("\n@@SUB@@", "")
         val pk = a.substringAfter("\n@@PACK@@", "")
         sub = a.substringBefore("\n@@PACK@@").trim()
@@ -1833,7 +1838,7 @@ class PlayerActivity : AppCompatActivity() {
                 disableOwn()
                 try { mp.setSpuTrack(-1) } catch (_: Throwable) {}
                 Toast.makeText(this, "🔊 صوت عربي: الترجمة اتقفلت", Toast.LENGTH_SHORT).show()
-            } else if (rawCues.isNotEmpty() && getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null) != "off") {
+            } else if (rawCues.isNotEmpty() && !subOffNow) {
                 enableOwn(false)
             }
         } catch (_: Throwable) {}
@@ -1879,9 +1884,10 @@ class PlayerActivity : AppCompatActivity() {
                 c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             }
             val code = c.responseCode
+            lastHttp = "HTTP $code"
             if (code !in 200..299) null
             else JSONObject(c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) })
-        } catch (_: Throwable) { null } finally { c.disconnect() }
+        } catch (ex: Throwable) { lastHttp = (ex.javaClass.simpleName + " " + (ex.message ?: "")).take(60); null } finally { c.disconnect() }
     }
 
     /** بيجيب ترجمات العربي الأقرب للملف (مرتّبة) من السيرفر */
@@ -1893,7 +1899,7 @@ class PlayerActivity : AppCompatActivity() {
             val d = httpJson("$b/subx/pack?tk=${enc(tk)}&$q&fname=${enc(pj("fn"))}", null)
             val arr = d?.optJSONArray("items")
             if (arr == null || arr.length() == 0) {
-                runOnUiThread { if (!isDestroyed) Toast.makeText(this, "ترجمات عربي: السيرفر مرجّعش حاجة", Toast.LENGTH_SHORT).show() }
+                runOnUiThread { if (!isDestroyed) Toast.makeText(this, "ترجمات عربي: السيرفر مرجّعش حاجة (" + lastHttp + ")", Toast.LENGTH_LONG).show() }
                 return@Thread
             }
             val l = ArrayList<PackSub>()
@@ -2063,7 +2069,7 @@ class PlayerActivity : AppCompatActivity() {
             disableOwn()
             try { mp.setSpuTrack(-1) } catch (_: Throwable) {}
             vlcSubChosen = true
-            pr.edit().putString("sub_pref", "off").apply()
+            subOffNow = true
             panel?.dismiss()
         })
         if (ownCues.isNotEmpty() && subSel < 0) {
@@ -2080,7 +2086,7 @@ class PlayerActivity : AppCompatActivity() {
                 mp.setSpuTrack(t.id)
                 disableOwn()
                 vlcSubChosen = true
-                pr.edit().putString("sub_pref", t.name).apply()
+                subOffNow = false
                 panel?.dismiss()
             })
         }
@@ -2426,8 +2432,15 @@ class PlayerActivity : AppCompatActivity() {
         } else Media(vlc, u)
         m.setHWDecoderEnabled(hwOn, false)
         var st = startIntent
-        // استكمال المشاهدة: آخر موضع محفوظ (من المشغّل المحلي أو من متابعة البث على التلفزيون)
-        if (st <= 0) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
+        if (freshStart) {
+            // «من الأول»: نمسح المكان المحفوظ ونبدأ من صفر
+            freshStart = false
+            st = 0
+            try { getSharedPreferences("pos", MODE_PRIVATE).edit().remove("p:$url").apply() } catch (_: Throwable) {}
+        } else if (st <= 0) {
+            // استكمال المشاهدة: آخر موضع محفوظ (من المشغّل المحلي أو من متابعة البث على التلفزيون)
+            st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
+        }
         if (st > 5) m.addOption(":start-time=$st")
         if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000"); m.addOption(":http-user-agent=$BROWSER_UA") }
         mp.media = m
