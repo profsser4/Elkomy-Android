@@ -351,7 +351,9 @@ class PlayerActivity : AppCompatActivity() {
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
         if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
-        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--http-user-agent=$BROWSER_UA"))
+        val vopts = arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--http-user-agent=$BROWSER_UA")
+        arabicFontPath()?.let { vopts.add("--freetype-font=$it") }   // خط عربي لترجمة VLC (من غيره بتظهر مربعات)
+        vlc = LibVLC(this, vopts)
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
@@ -1990,6 +1992,23 @@ class PlayerActivity : AppCompatActivity() {
             try { c?.disconnect() } catch (_: Throwable) {}
             try { cl.close() } catch (_: Throwable) {}
         }
+    }
+
+    // بيدوّر في خطوط النظام على خط عربي عشان VLC يرسم الترجمة العربي بدل المربعات
+    private fun arabicFontPath(): String? {
+        return try {
+            val fs = File("/system/fonts").listFiles { f -> f.isFile && f.name.endsWith(".ttf", true) && f.name.contains("Arabic", true) } ?: return null
+            val best = fs.sortedBy {
+                val n = it.name
+                when {
+                    n.contains("Naskh", true) && n.contains("Regular", true) -> 0
+                    n.contains("Sans", true) && n.contains("Regular", true) -> 1
+                    n.contains("Regular", true) -> 2
+                    else -> 3
+                }
+            }.firstOrNull()
+            best?.absolutePath
+        } catch (_: Throwable) { null }
     }
 
     private fun failFinal() {
