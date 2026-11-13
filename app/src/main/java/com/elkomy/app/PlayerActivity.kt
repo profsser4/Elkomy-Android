@@ -2101,14 +2101,8 @@ class PlayerActivity : AppCompatActivity() {
         }
         val why = d.optString("reason")
         if (why == "split" || why == "low") {
-            tried.add(subSel)
-            val nx = subList.take(4).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
-            if (nx != null) {
-                Toast.makeText(this, "🔄 الترجمة دي مش مطابقة، بجرّب ترجمة تانية...", Toast.LENGTH_SHORT).show()
-                selectSub(nx, false)
-                return
-            }
-            Toast.makeText(this, "مقدرتش أظبط الترجمة أوتوماتيك. اظبطها من الأدوات ← تأخير الترجمة", Toast.LENGTH_LONG).show()
+            // ما بنبدّلش الترجمة لوحدنا: الترجمة الحالية تفضل زي ما هي، وانت اللي تغيّرها لو عاوز
+            Toast.makeText(this, "مش متأكد من ضبط الترجمة دي بالصوت. لو عاوز غيّرها من الأدوات ← الصوت والترجمة", Toast.LENGTH_LONG).show()
         }
     }
 
