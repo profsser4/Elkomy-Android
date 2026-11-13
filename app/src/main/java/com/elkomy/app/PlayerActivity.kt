@@ -1995,20 +1995,46 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // بيدوّر في خطوط النظام على خط عربي عشان VLC يرسم الترجمة العربي بدل المربعات
+    // (بيفحص فعلاً إن الخط فيه حرف عربي، ومش بس بيعتمد على اسم الملف)
+    private var arFontCache: String? = null
+    private var arFontDone = false
     private fun arabicFontPath(): String? {
-        return try {
-            val fs = File("/system/fonts").listFiles { f -> f.isFile && f.name.endsWith(".ttf", true) && f.name.contains("Arabic", true) } ?: return null
-            val best = fs.sortedBy {
-                val n = it.name
-                when {
-                    n.contains("Naskh", true) && n.contains("Regular", true) -> 0
-                    n.contains("Sans", true) && n.contains("Regular", true) -> 1
-                    n.contains("Regular", true) -> 2
-                    else -> 3
+        if (arFontDone) return arFontCache
+        arFontDone = true
+        try {
+            val dirs = listOf("/system/fonts", "/system_ext/fonts", "/product/fonts", "/vendor/fonts", "/data/fonts/files")
+            val files = ArrayList<File>()
+            for (d in dirs) {
+                File(d).walkTopDown().maxDepth(3).forEach { f ->
+                    val n = f.name.lowercase()
+                    if (f.isFile && (n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc"))) files.add(f)
                 }
-            }.firstOrNull()
-            best?.absolutePath
-        } catch (_: Throwable) { null }
+            }
+            fun score(f: File): Int {
+                val n = f.name.lowercase()
+                var sc = 50
+                if (n.contains("naskh")) sc -= 20
+                if (n.contains("arabic")) sc -= 15
+                if (n.contains("kufi")) sc -= 5
+                if (n.contains("regular")) sc -= 8
+                if (n.contains("ui")) sc += 2
+                if (n.contains("bold") || n.contains("italic") || n.contains("light") || n.contains("thin") || n.contains("black") || n.contains("medium")) sc += 15
+                if (n.endsWith(".ttc")) sc += 5
+                return sc
+            }
+            val paint = android.graphics.Paint()
+            for (f in files.sortedBy { score(it) }) {
+                try {
+                    paint.typeface = Typeface.createFromFile(f)
+                    // لازم الخط يدعم الحروف العربي الأساسية
+                    if (paint.hasGlyph("\u0639") && paint.hasGlyph("\u0645") && paint.hasGlyph("\u0627")) {
+                        arFontCache = f.absolutePath
+                        return arFontCache
+                    }
+                } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {}
+        return null
     }
 
     private fun failFinal() {
