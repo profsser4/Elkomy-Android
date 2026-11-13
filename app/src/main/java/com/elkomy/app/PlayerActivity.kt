@@ -222,6 +222,7 @@ class PlayerActivity : AppCompatActivity() {
     private var autoPip = true
     private var aiBusy = false
     private var picked = false
+    private var lastPos = 0L              // أبعد نقطة اتشغّلت (بنستخدمها نفرّق بين نهاية الفيلم وفشل التشغيل)
 
     private val hideRun = Runnable { hideUi() }
 
@@ -249,6 +250,7 @@ class PlayerActivity : AppCompatActivity() {
                     tvRemain.text = fmt(len - t)
                 }
                 playBtn.setKind(if (mp.isPlaying) IconView.PAUSE else IconView.PLAY)
+                if (mp.isPlaying) { val tn = mp.time; if (tn > lastPos) lastPos = tn }
             }
             updateNext()
             h.postDelayed(this, 500)
@@ -1168,6 +1170,24 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun onEnded() {
         if (waiting) return
+        if (cast == null) {
+            // لو الفيديو «خلص» وإحنا لسه بعيد عن آخره، ده فشل تشغيل مش نهاية فيلم: منقفلش المشغّل
+            val len = mp.length
+            val early = if (len > 0) lastPos < len - 120_000L else lastPos < 20_000L
+            if (early) {
+                if (hwOn && !hwRetried && curUrl.isNotEmpty()) {
+                    hwRetried = true
+                    hwOn = false
+                    Toast.makeText(this, "الفيديو وقف بدري، بجرّب وضع التوافق الكامل...", Toast.LENGTH_SHORT).show()
+                    val p = (lastPos / 1000).toInt()
+                    h.post { if (!isDestroyed) { loadMedia(curUrl, p); mp.play() } }
+                } else {
+                    spinner.visibility = View.GONE
+                    Toast.makeText(this, "الفيديو وقف عند " + fmt(lastPos) + " من " + fmt(len) + " (الملف أو الرابط فيه مشكلة)", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+        }
         if (sleepAtEnd) { sleepAtEnd = false; report(true); finish(); return }
         if (hasLocalNext() && autoNext) { h.post { playLocalNext() }; return }
         report(true)
@@ -1710,6 +1730,7 @@ class PlayerActivity : AppCompatActivity() {
     // ================= دورة الحياة =================
     private fun loadMedia(url: String, startIntent: Int) {
         picked = false
+        lastPos = 0L
         cast?.let { dv ->
             if (url.startsWith("http")) {
                 castPos = startIntent.toLong(); castLen = 0; castFired = false
