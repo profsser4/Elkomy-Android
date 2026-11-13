@@ -389,22 +389,16 @@ class PlayerActivity : AppCompatActivity() {
                         val p = (maxOf(0L, mp.time) / 1000).toInt()
                         h.post { if (!isDestroyed) { loadMedia(curUrl, p); mp.play() } }
                     } else if (!resolveTried && cast == null && curUrl.startsWith("http")) {
-                        // تاني فشل: نحلّ التحويلات (redirects) بنفسنا ونديّ VLC الرابط النهائي
+                        // تاني فشل: نعدّي الفيديو على بروكسي محلي (شبكة الأندرويد بدل اتصال VLC المباشر)
                         resolveTried = true
-                        Toast.makeText(this, "بجرّب أحلّ تحويل الرابط...", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "بجرّب مسار تاني للرابط...", Toast.LENGTH_SHORT).show()
                         val cu = curUrl
                         val p = (maxOf(0L, mp.time) / 1000).toInt()
-                        Thread {
-                            val r = resolveFinalUrl(cu)
-                            runOnUiThread {
-                                if (isDestroyed) return@runOnUiThread
-                                if (r != null && r != cu) {
-                                    resolvedUrl = r
-                                    loadMedia(cu, p)
-                                    mp.play()
-                                } else failFinal()
-                            }
-                        }.start()
+                        val px = startProxy(cu)
+                        if (px != null) {
+                            resolvedUrl = px
+                            h.post { if (!isDestroyed) { loadMedia(cu, p); mp.play() } }
+                        } else failFinal()
                     } else {
                         failFinal()
                     }
@@ -1924,25 +1918,78 @@ class PlayerActivity : AppCompatActivity() {
         } catch (e: Throwable) { (e.javaClass.simpleName + ": " + (e.message ?: "")).take(80) }
     }
 
-    // بيمشي ورا التحويلات (redirects) بنفسه ويرجّع الرابط النهائي، أو null لو فشل
-    private fun resolveFinalUrl(url: String): String? {
-        var cur = url
+    // بروكسي محلي: بيجيب الفيديو بشبكة الأندرويد نفسها (TLS وشهادات النظام + User-Agent متصفح) ويدّيه لـ VLC على 127.0.0.1
+    // بيتخطى أي مشكلة في اتصال VLC المباشر بسيرفر TorBox (شهادات / UA / تحويلات)
+    private var proxySock: java.net.ServerSocket? = null
+    @Volatile private var proxyTarget = ""
+
+    private fun startProxy(target: String): String? {
         return try {
-            for (i in 0 until 6) {
-                val c = URL(cur).openConnection() as HttpURLConnection
-                c.instanceFollowRedirects = false
-                c.connectTimeout = 10000
-                c.readTimeout = 10000
-                c.setRequestProperty("User-Agent", BROWSER_UA)
-                c.setRequestProperty("Range", "bytes=0-0")
-                val code = c.responseCode
-                val loc = c.getHeaderField("Location")
-                c.disconnect()
-                if (code in 300..399 && !loc.isNullOrEmpty()) cur = URL(URL(cur), loc).toString()
-                else return if (code in 200..299) cur else null
+            proxyTarget = target
+            if (proxySock == null) {
+                val ss = java.net.ServerSocket(0, 16, java.net.InetAddress.getByName("127.0.0.1"))
+                proxySock = ss
+                Thread {
+                    while (!ss.isClosed) {
+                        val cl = try { ss.accept() } catch (_: Throwable) { break }
+                        Thread { proxyServe(cl) }.start()
+                    }
+                }.start()
             }
-            null
+            "http://127.0.0.1:" + proxySock!!.localPort + "/v"
         } catch (_: Throwable) { null }
+    }
+
+    private fun proxyServe(cl: java.net.Socket) {
+        var c: HttpURLConnection? = null
+        try {
+            cl.soTimeout = 60000
+            val inp = cl.getInputStream()
+            val sb = StringBuilder()
+            while (sb.length < 16384) {
+                val b = inp.read()
+                if (b < 0) break
+                sb.append(b.toChar())
+                if (sb.endsWith("\r\n\r\n")) break
+            }
+            val lines = sb.toString().split("\r\n")
+            val method = lines[0].substringBefore(' ').ifEmpty { "GET" }
+            var range: String? = null
+            for (l in lines) if (l.startsWith("Range:", true)) range = l.substringAfter(':').trim()
+            c = URL(proxyTarget).openConnection() as HttpURLConnection
+            c.requestMethod = if (method == "HEAD") "HEAD" else "GET"
+            c.instanceFollowRedirects = true
+            c.connectTimeout = 15000
+            c.readTimeout = 30000
+            c.setRequestProperty("User-Agent", BROWSER_UA)
+            c.setRequestProperty("Accept-Encoding", "identity")
+            if (range != null) c.setRequestProperty("Range", range)
+            val code = c.responseCode
+            val out = cl.getOutputStream()
+            val head = StringBuilder("HTTP/1.1 " + code + " " + (c.responseMessage ?: "OK") + "\r\n")
+            for (k in listOf("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges")) {
+                val v = c.getHeaderField(k)
+                if (v != null) head.append(k).append(": ").append(v).append("\r\n")
+            }
+            head.append("Connection: close\r\n\r\n")
+            out.write(head.toString().toByteArray())
+            if (method != "HEAD") {
+                val src = if (code >= 400) c.errorStream else c.inputStream
+                if (src != null) {
+                    val buf = ByteArray(65536)
+                    while (true) {
+                        val r = src.read(buf)
+                        if (r < 0) break
+                        out.write(buf, 0, r)
+                    }
+                }
+            }
+            out.flush()
+        } catch (_: Throwable) {
+        } finally {
+            try { c?.disconnect() } catch (_: Throwable) {}
+            try { cl.close() } catch (_: Throwable) {}
+        }
     }
 
     private fun failFinal() {
@@ -1951,15 +1998,21 @@ class PlayerActivity : AppCompatActivity() {
         waitLayer?.visibility = View.GONE
         Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
         val cu = curUrl
-        if (cu.startsWith("http")) {
-            Thread {
-                val a = httpProbe(cu, "VLC/3.0.20 LibVLC/3.0.20")
-                val b = httpProbe(cu, BROWSER_UA)
-                runOnUiThread {
-                    if (!isDestroyed) Toast.makeText(this, "تشخيص الرابط:\nUA بتاع VLC: $a\nUA متصفح: $b", Toast.LENGTH_LONG).show()
+        val shown = try { val u = Uri.parse(cu); (u.scheme + "://" + u.host + (u.path ?: "")).take(160) } catch (_: Throwable) { cu.take(80) }
+        val port = proxySock?.localPort
+        Thread {
+            val sb = StringBuilder("بناء 2\nالرابط (من غير التوكن):\n").append(shown).append("\n")
+            if (cu.startsWith("http")) {
+                sb.append("\nUA بتاع VLC: ").append(httpProbe(cu, "VLC/3.0.20 LibVLC/3.0.20"))
+                sb.append("\nUA متصفح: ").append(httpProbe(cu, BROWSER_UA))
+                if (port != null) sb.append("\nعن طريق البروكسي: ").append(httpProbe("http://127.0.0.1:" + port + "/v", BROWSER_UA))
+            } else sb.append("\n(مش رابط http)")
+            runOnUiThread {
+                if (!isDestroyed && !isFinishing) {
+                    try { AlertDialog.Builder(this).setTitle("تشخيص التشغيل").setMessage(sb.toString()).setPositiveButton("تمام", null).show() } catch (_: Throwable) {}
                 }
-            }.start()
-        }
+            }
+        }.start()
     }
 
     private fun loadMedia(url: String, startIntent: Int) {
@@ -2055,6 +2108,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { proxySock?.close() } catch (_: Throwable) {}
         h.removeCallbacks(subTick)
         h.removeCallbacks(waitTimeout)
         h.removeCallbacks(hudHide)
