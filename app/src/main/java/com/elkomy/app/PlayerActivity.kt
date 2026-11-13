@@ -1934,6 +1934,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun failOver() {
         if (isDestroyed || arAudio) return
         if (subSel >= 0) tried.add(subSel)
+        if (tried.size >= 3) { Toast.makeText(this, "مفيش ترجمة عربي شغّالة دلوقتي (ممكن حد تحميلات SubDL خلص)", Toast.LENGTH_LONG).show(); return }
         if (subList.isEmpty()) { subFailed = true; return }      // القايمة لسه ماوصلتش، fetchPack هيكمّل
         val nx = subList.indices.firstOrNull { it !in tried }
         if (nx != null) {
@@ -2014,7 +2015,7 @@ class PlayerActivity : AppCompatActivity() {
         val why = d.optString("reason")
         if (why == "split" || why == "low") {
             tried.add(subSel)
-            val nx = subList.take(8).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
+            val nx = subList.take(4).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
             if (nx != null) {
                 Toast.makeText(this, "🔄 الترجمة دي مش مطابقة، بجرّب ترجمة تانية...", Toast.LENGTH_SHORT).show()
                 selectSub(nx, false)
