@@ -22,6 +22,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Rational
+import android.util.TypedValue
+import android.app.UiModeManager
+import android.content.res.Configuration
 import android.text.InputType
 import android.view.GestureDetector
 import android.view.Gravity
@@ -533,23 +536,21 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
 
-        // ---- الترجمة (بنرسمها بنفسنا): بتطلع فوق شريط التحكم لما يظهر وتنزل لما يختفي (زي نتفلكس)
+        // ---- الترجمة (بنرسمها بنفسنا): نفس شكل المتصفح (حجم تلقائي حسب الشاشة + خلفية + لون) وبتطلع فوق شريط التحكم لما يظهر
+        loadCuePrefs()
         subView = object : TextView(this) {
             override fun onDraw(c: Canvas) { super.onDraw(c); super.onDraw(c) }   // مرتين عشان الضل يبان كحدود سودا واضحة
         }.apply {
-            setTextColor(Color.WHITE)
-            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setLineSpacing(0f, 1.1f)
-            setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+            setLineSpacing(0f, 1.3f)
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG_RTL
             isClickable = false
             isFocusable = false
             visibility = View.GONE
         }
-        root.addView(subView, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin = dp(34); marginStart = dp(56); marginEnd = dp(56)
-        })
+        root.addView(subView, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+        applyCueStyle()
 
         ui = FrameLayout(this)
 
@@ -1464,6 +1465,7 @@ class PlayerActivity : AppCompatActivity() {
         })
         inner.addView(stepper("تأخير الصوت", { try { mp.audioDelay } catch (_: Throwable) { 0L } }, { try { mp.setAudioDelay(it) } catch (_: Throwable) {} }))
         inner.addView(stepper("تأخير الترجمة", { if (ownOn) ownDelayUs else try { mp.spuDelay } catch (_: Throwable) { 0L } }, { v -> if (ownOn) { ownDelayUs = v; fixSoon() } else { try { mp.setSpuDelay(v) } catch (_: Throwable) {} } }))
+        inner.addView(optionRow("🎨  شكل الترجمة (الحجم / الخلفية / اللون)", false) { openCueStyle() })
         inner.addView(optionRow("🎚  الإيكولايزر (بيس / صوت أوضح)", eqIdx >= 0) { openEq() })
         inner.addView(optionRow("😴  مؤقت النوم", sleepRun != null || sleepAtEnd) { openSleep() })
         inner.addView(optionRow("🪟  صورة داخل صورة (PiP)", false) { enterPip() })
@@ -1657,6 +1659,74 @@ class PlayerActivity : AppCompatActivity() {
     private var bottomBar: View? = null
     private var subLifted = false
 
+    // ---- شكل الترجمة (زي المتصفح): الحجم / الخلفية / اللون + الضبط التلقائي والتراجع
+    private val CUE_SIZES = floatArrayOf(0.9f, 1.15f, 1.5f, 1.9f)
+    private val CUE_SIZE_N = arrayOf("صغير", "عادي", "كبير", "كبير جداً")
+    private val CUE_BGS = floatArrayOf(0f, 0.5f, 0.85f)
+    private val CUE_BG_N = arrayOf("بدون", "شفافة", "غامقة")
+    private val CUE_COLS = intArrayOf(0xFFFFFFFF.toInt(), 0xFFFFE14D.toInt())
+    private val CUE_COL_N = arrayOf("أبيض", "أصفر")
+    private var cueSz = 1.15f
+    private var cueBg = 0f
+    private var cueCol = 0xFFFFFFFF.toInt()
+    private var autoSyncOn = true
+    private var prevXf: Pair<Double, Double>? = null
+    private var cuePreview = false
+
+    private fun loadCuePrefs() {
+        try {
+            val pr = getSharedPreferences("cue", MODE_PRIVATE)
+            cueSz = pr.getFloat("sz", 1.15f).coerceIn(0.6f, 2.4f)
+            cueBg = pr.getFloat("bg", 0f).coerceIn(0f, 1f)
+            cueCol = pr.getInt("col", 0xFFFFFFFF.toInt())
+            autoSyncOn = pr.getBoolean("as", true)
+        } catch (_: Throwable) {}
+    }
+
+    private fun saveCuePrefs() {
+        try {
+            getSharedPreferences("cue", MODE_PRIVATE).edit()
+                .putFloat("sz", cueSz).putFloat("bg", cueBg).putInt("col", cueCol).putBoolean("as", autoSyncOn).apply()
+        } catch (_: Throwable) {}
+    }
+
+    private fun isTvDevice(): Boolean = try {
+        (getSystemService(Context.UI_MODE_SERVICE) as UiModeManager).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature("android.software.leanback")
+    } catch (_: Throwable) { false }
+
+    /** وحدة القياس: على التلفزيون بنقيس على عرض 1920 (زي صفحة الشاشة بالظبط)، وعلى الموبايل بالـ dp */
+    private fun cueUnit(): Float {
+        val dm = resources.displayMetrics
+        return if (isTvDevice()) dm.widthPixels / 1920f else dm.density
+    }
+
+    /** مقاس الخط زي المتصفح: clamp(18px, 2.6vw, 44px) × (الحجم ÷ 1.15) */
+    private fun cuePx(): Float {
+        val dm = resources.displayMetrics
+        val u = cueUnit()
+        return (dm.widthPixels * 0.026f).coerceIn(18f * u, 44f * u) * (cueSz / 1.15f)
+    }
+
+    private fun applyCueStyle() {
+        val v = subView ?: return
+        val dm = resources.displayMetrics
+        val u = cueUnit()
+        v.setTextSize(TypedValue.COMPLEX_UNIT_PX, cuePx())
+        v.setTextColor(cueCol)
+        v.setShadowLayer(4f * u, 0f, 1f * u, Color.BLACK)
+        v.setPadding((14 * u).toInt(), (2 * u).toInt(), (14 * u).toInt(), (2 * u).toInt())
+        v.maxWidth = (dm.widthPixels * 0.88f).toInt()
+        v.background = if (cueBg > 0f) GradientDrawable().apply {
+            setColor(((cueBg * 255).toInt() shl 24))
+            cornerRadius = 6f * u
+        } else null
+        (v.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.bottomMargin = (dm.heightPixels * 0.09f).toInt()     // 9% من تحت زي المتصفح
+            v.layoutParams = it
+        }
+    }
+
     private val subTick = object : Runnable {
         override fun run() {
             try { updateOwnSub() } catch (_: Throwable) {}
@@ -1669,7 +1739,7 @@ class PlayerActivity : AppCompatActivity() {
         return try { p[0].toLong() * 3600000L + p[1].toLong() * 60000L + p[2].toLong() * 1000L + p[3].toLong() } catch (_: Throwable) { 0L }
     }
 
-    private fun cleanSub(t: String) = t.replace(Regex("<[^>]*>"), "").replace(Regex("\\{[^}]*\\}"), "")
+    private fun cleanSub(t: String) = t.replace(Regex("<[^>]*>"), "").replace(Regex("\\{[^}]*\\}"), "").replace(Regex("[\u202a-\u202e]"), "")
         .replace(Regex("\\s*\\n\\s*"), "\n").trim()
 
     private fun loadOwnSub(src: String, force: Boolean = false, sh0: Double = 0.0, sc0: Double = 1.0, onFail: (() -> Unit)? = null, onLoaded: (() -> Unit)? = null) {
@@ -1735,6 +1805,7 @@ class PlayerActivity : AppCompatActivity() {
         syncBusy = false
         syncDone = false
         rawCues = emptyList()
+        prevXf = null
         xShift = 0.0
         xScale = 1.0
         subList = emptyList()
@@ -1757,9 +1828,17 @@ class PlayerActivity : AppCompatActivity() {
         val want = uiShown && ui.visibility == View.VISIBLE && !locked
         if (want != subLifted) {
             subLifted = want
-            val lift = ((bottomBar?.height ?: dp(130)) - dp(54)).coerceAtLeast(dp(40))
+            val hpx = resources.displayMetrics.heightPixels
+            val base = (hpx * 0.09f).toInt()
+            val lift = maxOf((hpx * 0.12f).toInt(), (bottomBar?.height ?: dp(130)) - dp(20) - base)   // 9% ← 21% زي المتصفح
             v.animate().cancel()
             v.animate().translationY(if (want) -lift.toFloat() else 0f).setDuration(220).start()
+        }
+        if (cuePreview) {
+            if (v.text.toString() != "مثال على شكل الترجمة\nبنفس الحجم واللون") v.text = "مثال على شكل الترجمة\nبنفس الحجم واللون"
+            ownShown = -2
+            if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
+            return
         }
         val c = ownCues
         if (!ownOn || c.isEmpty() || cast != null || inPip() || waiting) {
@@ -1925,6 +2004,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun selectSub(i: Int, byUser: Boolean) {
         val s0 = subList.getOrNull(i) ?: return
         subSel = i
+        prevXf = null
         tried.add(i)
         syncDone = false
         syncGen++
@@ -1970,7 +2050,7 @@ class PlayerActivity : AppCompatActivity() {
         val b = pj("b")
         if (pack == null || b.isEmpty() || syncBusy || syncDone || rawCues.isEmpty() || arAudio || !curUrl.startsWith("http")) return
         val body = syncBody() ?: return
-        body.put("force", false).put("dur", try { mp.length / 1000.0 } catch (_: Throwable) { 0.0 })
+        body.put("force", false).put("fixonly", !autoSyncOn).put("dur", try { mp.length / 1000.0 } catch (_: Throwable) { 0.0 })
         syncBusy = true
         val gen = ++syncGen
         val tk = pj("tk")
@@ -2014,6 +2094,7 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         if (ok) {
+            if (prevXf == null) prevXf = Pair(xShift, xScale)
             applyXf(sh, sc)
             Toast.makeText(this, "🎯 اتضبطت الترجمة بالصوت (" + (if (sh > 0) "+" else "") + String.format("%.1f", sh) + " ث)", Toast.LENGTH_LONG).show()
             return
@@ -2051,6 +2132,151 @@ class PlayerActivity : AppCompatActivity() {
         }.also { it.isDaemon = true }.start()
     }
 
+    // ---------- عناصر اللوحة (زي أزرار chips في المتصفح) ----------
+    private fun styleChip(c: TextView, on: Boolean) {
+        c.background = round(if (on) RED else 0x33FFFFFF, 8)
+        c.typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+    }
+
+    private fun chip(text: String, on: Boolean, onClick: () -> Unit): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(Color.WHITE)
+        textSize = 15f
+        gravity = Gravity.CENTER
+        setPadding(dp(14), dp(8), dp(14), dp(8))
+        isClickable = true
+        isFocusable = true
+        styleChip(this, on)
+        setOnClickListener { onClick() }
+        focusScale(this)
+    }
+
+    private fun smallLabel(t: String) = TextView(this).apply {
+        text = t
+        setTextColor(0xFFB3B3B3.toInt())
+        textSize = 14f
+        setPadding(dp(8), dp(8), dp(8), dp(4))
+    }
+
+    /** صف اختيارات: sticky = بيفضل مظلّل على المختار (حجم/لون)، وغير كده أزرار فعل (±) */
+    private fun chipRow(names: Array<String>, sel: Int, ltr: Boolean = false, sticky: Boolean = true, onPick: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = if (ltr) View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(4), dp(2), dp(4), dp(6))
+        }
+        val cells = ArrayList<TextView>()
+        names.forEachIndexed { i, n ->
+            val c = chip(n, sticky && i == sel) {
+                if (sticky) cells.forEachIndexed { j, x -> styleChip(x, j == i) }
+                onPick(i)
+            }
+            cells.add(c)
+            row.addView(c, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+        }
+        return row
+    }
+
+    private fun shiftNow(): Double = Math.round((xShift + ownDelayUs / 1e6) * 10.0) / 10.0
+
+    private fun shiftLabel(): String {
+        val sft = if (ownOn) shiftNow() else try { Math.round(mp.spuDelay / 1e5) / 10.0 } catch (_: Throwable) { 0.0 }
+        return "ضبط التوقيت (" + (if (sft > 0) "+" else "") + sft + " ث)"
+    }
+
+    /** تقديم/تأخير الترجمة بالثواني (لو الترجمة بتسبق الصوت اضغط +، ولو متأخرة اضغط −) وبيتحفظ على حسابك */
+    private fun shiftSub(d: Double) {
+        if (ownOn) {
+            xShift = Math.round((xShift + ownDelayUs / 1e6 + d) * 10.0) / 10.0
+            ownDelayUs = 0L
+            rebuildOwn()
+            fixSoon()
+        } else {
+            try { mp.setSpuDelay(mp.spuDelay + (d * 1e6).toLong()) } catch (_: Throwable) {}
+        }
+    }
+
+    private fun undoSync() {
+        val p = prevXf ?: return
+        syncGen++            // يوقّف أي ضبط تلقائي شغّال
+        syncBusy = false
+        syncDone = true
+        applyXf(p.first, p.second)
+        prevXf = null
+        Toast.makeText(this, "↩︎ رجّعت الترجمة زي ما كانت. الضبط التلقائي واقف للفيلم ده.", Toast.LENGTH_SHORT).show()
+    }
+
+    /** ضبط التوقيت + الضبط التلقائي بالصوت + تراجع + شكل الترجمة (فوق قايمة الترجمات) */
+    private fun syncControls(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val lbl = smallLabel(shiftLabel())
+        box.addView(lbl)
+        box.addView(chipRow(arrayOf("−1", "−0.5", "+0.5", "+1"), -1, ltr = true, sticky = false) { i ->
+            shiftSub(doubleArrayOf(-1.0, -0.5, 0.5, 1.0)[i])
+            lbl.text = shiftLabel()
+        })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(4), dp(2), dp(4), dp(6))
+        }
+        val tg = chip("🎯 ضبط تلقائي بالصوت", autoSyncOn) {}
+        tg.setOnClickListener {
+            autoSyncOn = !autoSyncOn
+            saveCuePrefs()
+            styleChip(tg, autoSyncOn)
+            if (autoSyncOn) {
+                Toast.makeText(this, "🎯 الضبط التلقائي شغّال", Toast.LENGTH_SHORT).show()
+                syncDone = false
+                autoSync()
+            } else {
+                Toast.makeText(this, "الضبط التلقائي اتقفل (ضبطك المحفوظ لسه بيتطبّق)", Toast.LENGTH_SHORT).show()
+            }
+        }
+        row.addView(tg, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+        if (prevXf != null) {
+            val un = chip("↩︎ تراجع", false) {}
+            un.setOnClickListener { undoSync(); lbl.text = shiftLabel(); un.visibility = View.GONE }
+            row.addView(un, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+        }
+        box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
+        box.addView(optionRow("🎨  شكل الترجمة (الحجم / الخلفية / اللون)", false) { openCueStyle() })
+        return box
+    }
+
+    /** لوحة شكل الترجمة: الحجم / الخلفية / اللون، مع معاينة حيّة على الشاشة */
+    private fun openCueStyle() {
+        val box = toolsBox("شكل الترجمة")
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inner.addView(smallLabel("الحجم"))
+        inner.addView(chipRow(CUE_SIZE_N, CUE_SIZES.indexOfFirst { Math.abs(it - cueSz) < 0.01f }) { i ->
+            cueSz = CUE_SIZES[i]; saveCuePrefs(); applyCueStyle()
+        })
+        inner.addView(smallLabel("الخلفية"))
+        inner.addView(chipRow(CUE_BG_N, CUE_BGS.indexOfFirst { Math.abs(it - cueBg) < 0.01f }) { i ->
+            cueBg = CUE_BGS[i]; saveCuePrefs(); applyCueStyle()
+        })
+        inner.addView(smallLabel("اللون"))
+        inner.addView(chipRow(CUE_COL_N, CUE_COLS.indexOf(cueCol)) { i ->
+            cueCol = CUE_COLS[i]; saveCuePrefs(); applyCueStyle()
+        })
+        inner.addView(optionRow("↺  الشكل الافتراضي", false) {
+            cueSz = 1.15f; cueBg = 0f; cueCol = 0xFFFFFFFF.toInt()
+            saveCuePrefs(); applyCueStyle(); openCueStyle()
+        })
+        box.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        showPanel(box, 0.5f, 0.62f)
+        val d = panel
+        d?.window?.setDimAmount(0.2f)
+        d?.setOnDismissListener {
+            if (panel === d) panel = null
+            cuePreview = false
+            ownShown = -2
+            scheduleHide()
+        }
+        cuePreview = true
+    }
+
     private fun shortName(n: String) = n.replace(Regex("\\.[a-z0-9]{2,4}$", RegexOption.IGNORE_CASE), "").take(40)
 
     private fun subColumn(): View {
@@ -2062,6 +2288,7 @@ class PlayerActivity : AppCompatActivity() {
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(8), 0, 0, dp(10))
         })
+        if (ownCues.isNotEmpty()) col.addView(syncControls())
         val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val pr = getSharedPreferences("pos", MODE_PRIVATE)
         val cur = mp.spuTrack
