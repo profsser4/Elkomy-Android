@@ -348,7 +348,7 @@ class PlayerActivity : AppCompatActivity() {
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
         if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
-        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--file-caching=1500", "--live-caching=1500", "--subsdec-encoding=Windows-1256"))
+        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500"))
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
