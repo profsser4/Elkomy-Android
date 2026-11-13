@@ -2001,6 +2001,15 @@ class PlayerActivity : AppCompatActivity() {
     private fun arabicFontPath(): String? {
         if (arFontDone) return arFontCache
         arFontDone = true
+        // 1) خط متضمّن جوه التطبيق (assets/arabic_sub.ttf): مضمون على أي جهاز
+        try {
+            val dst = File(filesDir, "arabic_sub.ttf")
+            if (!dst.exists() || dst.length() < 10000) {
+                assets.open("arabic_sub.ttf").use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+            }
+            if (dst.exists() && dst.length() > 10000) { arFontCache = dst.absolutePath; return arFontCache }
+        } catch (_: Throwable) {}
+        // 2) لو مفيش: دوّر في خطوط النظام
         try {
             val dirs = listOf("/system/fonts", "/system_ext/fonts", "/product/fonts", "/vendor/fonts", "/data/fonts/files")
             val files = ArrayList<File>()
