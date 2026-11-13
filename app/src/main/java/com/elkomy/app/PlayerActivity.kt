@@ -364,8 +364,9 @@ class PlayerActivity : AppCompatActivity() {
                     scheduleHide()
                     if (sub.isNotEmpty() && !subAdded) {
                         subAdded = true
-                        try { mp.addSlave(0, Uri.parse(sub), true) } catch (_: Throwable) {}
+                        loadOwnSub(sub)
                     }
+                    if (ownOn && mp.spuTrack != -1) { try { mp.setSpuTrack(-1) } catch (_: Throwable) {} }
                     if (!picked) {
                         picked = true
                         h.postDelayed({ autoPickTracks() }, 1800)
@@ -396,6 +397,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         buildUi()
         inst = this
+        h.post(subTick)
     }
 
     private fun buildUi() {
@@ -504,6 +506,24 @@ class PlayerActivity : AppCompatActivity() {
             indeterminateTintList = ColorStateList.valueOf(RED)
         }
         root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
+
+        // ---- الترجمة (بنرسمها بنفسنا): بتطلع فوق شريط التحكم لما يظهر وتنزل لما يختفي (زي نتفلكس)
+        subView = object : TextView(this) {
+            override fun onDraw(c: Canvas) { super.onDraw(c); super.onDraw(c) }   // مرتين عشان الضل يبان كحدود سودا واضحة
+        }.apply {
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.1f)
+            setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+            isClickable = false
+            isFocusable = false
+            visibility = View.GONE
+        }
+        root.addView(subView, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(34); marginStart = dp(56); marginEnd = dp(56)
+        })
 
         ui = FrameLayout(this)
 
@@ -619,6 +639,7 @@ class PlayerActivity : AppCompatActivity() {
                 addView(row2)
             })
         }
+        bottomBar = bottom
         ui.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
         root.addView(ui, FrameLayout.LayoutParams(-1, -1))
@@ -746,6 +767,7 @@ class PlayerActivity : AppCompatActivity() {
         titleText = plTitles[plIdx]
         tvTitle?.text = titleText
         sub = ""; subAdded = false; n = 0; hwOn = true; hwRetried = false
+        clearOwn()
         nextBtn?.visibility = View.GONE
         nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
         seek.progress = 0
@@ -812,6 +834,7 @@ class PlayerActivity : AppCompatActivity() {
         titleText = raw.substringBefore("\n@@SUB@@")
         tvTitle?.text = titleText
         subAdded = false
+        clearOwn()
         n = 0
         hwOn = true; hwRetried = false
         nextLabel = ""
@@ -910,14 +933,19 @@ class PlayerActivity : AppCompatActivity() {
         if (isDestroyed || cast != null) return
         try {
             val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
+            if (pref == "own" && ownOn) return
+            if (pref == "off") { vlcSubChosen = true; disableOwn(); try { mp.setSpuTrack(-1) } catch (_: Throwable) {}; return }
             val spu = mp.spuTracks ?: return
             if (spu.isEmpty()) return
-            if (pref == "off") { mp.setSpuTrack(-1); return }
             val ar = Regex("(^|[\\s\\[(-])(ar|ara)([\\s\\])-]|$)", RegexOption.IGNORE_CASE)
             fun isAr(n: String) = n.contains("arab", true) || n.contains("عرب") || ar.containsMatchIn(n)
             val cand = spu.firstOrNull { it.id != -1 && pref != null && it.name == pref }
                 ?: spu.firstOrNull { it.id != -1 && isAr(it.name) }
-            if (cand != null && mp.spuTrack != cand.id) mp.setSpuTrack(cand.id)
+            if (cand != null) {
+                vlcSubChosen = true
+                if (mp.spuTrack != cand.id) mp.setSpuTrack(cand.id)
+                disableOwn()
+            }
         } catch (_: Throwable) {}
     }
 
@@ -1080,6 +1108,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun column(title: String, tracks: Array<MediaPlayer.TrackDescription>?, selId: Int, allowOff: Boolean,
+                       extra: String? = null, extraSel: Boolean = false, extraSet: (() -> Unit)? = null,
                        set: (Int) -> Unit): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(TextView(this).apply {
@@ -1091,12 +1120,13 @@ class PlayerActivity : AppCompatActivity() {
         })
         val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val list = (tracks ?: emptyArray()).filter { allowOff || it.id != -1 }
+        if (extra != null) inner.addView(optionRow(extra, extraSel) { extraSet?.invoke(); panel?.dismiss() })
         if (list.isEmpty()) {
-            inner.addView(optionRow("غير متاح", false) {})
+            if (extra == null) inner.addView(optionRow("غير متاح", false) {})
         } else {
             list.forEach { t ->
                 val label = if (t.id == -1) "إيقاف" else t.name
-                inner.addView(optionRow(label, t.id == selId) { set(t.id); panel?.dismiss() })
+                inner.addView(optionRow(label, t.id == selId && !(extra != null && extraSel)) { set(t.id); panel?.dismiss() })
             }
         }
         col.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -1115,8 +1145,11 @@ class PlayerActivity : AppCompatActivity() {
         box.addView(View(this).apply { setBackgroundColor(0x33FFFFFF) }, LinearLayout.LayoutParams(dp(1), -1).apply {
             marginStart = dp(12); marginEnd = dp(12)
         })
-        box.addView(column("الترجمة", mp.spuTracks, mp.spuTrack, true) { id ->
+        box.addView(column("الترجمة", mp.spuTracks, mp.spuTrack, true,
+            if (ownCues.isNotEmpty()) "ترجمة الحلقة" else null, ownOn, { enableOwn() }) { id ->
             mp.setSpuTrack(id)
+            disableOwn()
+            vlcSubChosen = id != -1
             val nm = if (id == -1) "off" else mp.spuTracks?.firstOrNull { it.id == id }?.name
             getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", nm).apply()
         },
@@ -1415,7 +1448,7 @@ class PlayerActivity : AppCompatActivity() {
             panel?.dismiss()
         })
         inner.addView(stepper("تأخير الصوت", { try { mp.audioDelay } catch (_: Throwable) { 0L } }, { try { mp.setAudioDelay(it) } catch (_: Throwable) {} }))
-        inner.addView(stepper("تأخير الترجمة", { try { mp.spuDelay } catch (_: Throwable) { 0L } }, { try { mp.setSpuDelay(it) } catch (_: Throwable) {} }))
+        inner.addView(stepper("تأخير الترجمة", { if (ownOn) ownDelayUs else try { mp.spuDelay } catch (_: Throwable) { 0L } }, { v -> if (ownOn) { ownDelayUs = v } else { try { mp.setSpuDelay(v) } catch (_: Throwable) {} } }))
         inner.addView(optionRow("🎚  الإيكولايزر (بيس / صوت أوضح)", eqIdx >= 0) { openEq() })
         inner.addView(optionRow("😴  مؤقت النوم", sleepRun != null || sleepAtEnd) { openSleep() })
         inner.addView(optionRow("🪟  صورة داخل صورة (PiP)", false) { enterPip() })
@@ -1586,10 +1619,140 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun attachAiSub(f: File) {
         try {
-            mp.addSlave(0, Uri.fromFile(f), true)
+            loadOwnSub(Uri.fromFile(f).toString(), true)
             Toast.makeText(this, "✨ اتضافت الترجمة العربية الذكية", Toast.LENGTH_LONG).show()
         } catch (_: Throwable) {
             Toast.makeText(this, "تعذّر إضافة الترجمة", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+
+    // ================= ترجمة بتتحرك زي نتفلكس (بنرسمها بنفسنا بدل VLC) =================
+    // الترجمة الخارجية (ملف الحلقة + الترجمة الذكية) بتتعرض في TextView بتطلع فوق شريط التحكم لما يظهر وتنزل لما يختفي.
+    // الترجمة المدمجة جوه الفيديو لسه بيرسمها VLC زي ما هي.
+    private class OwnCue(val s: Long, val e: Long, val t: String)
+    private var ownCues: List<OwnCue> = emptyList()
+    private var ownOn = false
+    private var ownDelayUs = 0L
+    private var ownIdx = -1
+    private var ownShown = -2
+    private var vlcSubChosen = false
+    private var subLoadId = 0
+    private var subView: TextView? = null
+    private var bottomBar: View? = null
+    private var subLifted = false
+
+    private val subTick = object : Runnable {
+        override fun run() {
+            try { updateOwnSub() } catch (_: Throwable) {}
+            if (!isDestroyed) h.postDelayed(this, 100)
+        }
+    }
+
+    private fun tsMs(t: String): Long {
+        val p = t.replace(',', '.').split(':', '.')
+        return try { p[0].toLong() * 3600000L + p[1].toLong() * 60000L + p[2].toLong() * 1000L + p[3].toLong() } catch (_: Throwable) { 0L }
+    }
+
+    private fun cleanSub(t: String) = t.replace(Regex("<[^>]*>"), "").replace(Regex("\\{[^}]*\\}"), "")
+        .replace(Regex("\\s*\\n\\s*"), "\n").trim()
+
+    private fun loadOwnSub(src: String, force: Boolean = false) {
+        val id = ++subLoadId
+        Thread {
+            try {
+                val cues = parseCues(readSubText(src))
+                    .map { OwnCue(tsMs(it.start), tsMs(it.end), cleanSub(it.text)) }
+                    .filter { it.t.isNotEmpty() }
+                    .sortedBy { it.s }
+                if (cues.isEmpty()) throw IllegalStateException("empty")
+                runOnUiThread {
+                    if (isDestroyed || id != subLoadId) return@runOnUiThread
+                    ownCues = cues
+                    ownIdx = -1
+                    val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
+                    if (force || (!vlcSubChosen && pref != "off")) enableOwn(false) else disableOwn()
+                }
+            } catch (_: Throwable) {
+                // لو القراءة فشلت: نرجع للطريقة القديمة (VLC بيرسمها)
+                runOnUiThread {
+                    if (!isDestroyed && id == subLoadId) {
+                        try { mp.addSlave(0, Uri.parse(src), true) } catch (_: Throwable) {}
+                    }
+                }
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun enableOwn(save: Boolean = true) {
+        if (ownCues.isEmpty()) return
+        ownOn = true
+        vlcSubChosen = false
+        ownIdx = -1
+        ownShown = -2
+        try { mp.setSpuTrack(-1) } catch (_: Throwable) {}
+        if (save) getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", "own").apply()
+        updateOwnSub()
+    }
+
+    private fun disableOwn() {
+        ownOn = false
+        ownShown = -2
+        subView?.visibility = View.GONE
+    }
+
+    private fun clearOwn() {
+        subLoadId++
+        ownCues = emptyList()
+        ownOn = false
+        ownIdx = -1
+        ownShown = -2
+        ownDelayUs = 0L
+        vlcSubChosen = false
+        subView?.visibility = View.GONE
+    }
+
+    private fun updateOwnSub() {
+        val v = subView ?: return
+        // رفع/خفض الترجمة مع ظهور/اختفاء شريط التحكم
+        val want = uiShown && ui.visibility == View.VISIBLE && !locked
+        if (want != subLifted) {
+            subLifted = want
+            val lift = ((bottomBar?.height ?: dp(130)) - dp(54)).coerceAtLeast(dp(40))
+            v.animate().cancel()
+            v.animate().translationY(if (want) -lift.toFloat() else 0f).setDuration(220).start()
+        }
+        val c = ownCues
+        if (!ownOn || c.isEmpty() || cast != null || inPip() || waiting) {
+            if (v.visibility != View.GONE) v.visibility = View.GONE
+            ownShown = -2
+            return
+        }
+        val t = mp.time - ownDelayUs / 1000L
+        var i = ownIdx
+        if (i < 0 || i >= c.size || t < c[i].s || t > c[i].e) {
+            var lo = 0
+            var hi = c.size - 1
+            var f = -1
+            while (lo <= hi) {
+                val mid = (lo + hi) ushr 1
+                if (c[mid].s <= t) { f = mid; lo = mid + 1 } else hi = mid - 1
+            }
+            var hit = -1
+            var k = f
+            while (k >= 0 && k > f - 4) {
+                if (t <= c[k].e) { hit = k; break }
+                k--
+            }
+            i = hit
+            ownIdx = hit
+        }
+        if (i < 0) {
+            if (v.visibility != View.GONE) v.visibility = View.GONE
+            ownShown = -2
+        } else {
+            if (ownShown != i) { v.text = c[i].t; ownShown = i }
+            if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
         }
     }
 
@@ -1821,6 +1984,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        h.removeCallbacks(subTick)
         h.removeCallbacks(waitTimeout)
         h.removeCallbacks(hudHide)
         h.removeCallbacks(lockHide)
