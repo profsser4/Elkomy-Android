@@ -1669,7 +1669,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun cleanSub(t: String) = t.replace(Regex("<[^>]*>"), "").replace(Regex("\\{[^}]*\\}"), "")
         .replace(Regex("\\s*\\n\\s*"), "\n").trim()
 
-    private fun loadOwnSub(src: String, force: Boolean = false, sh0: Double = 0.0, sc0: Double = 1.0, onLoaded: (() -> Unit)? = null) {
+    private fun loadOwnSub(src: String, force: Boolean = false, sh0: Double = 0.0, sc0: Double = 1.0, onFail: (() -> Unit)? = null, onLoaded: (() -> Unit)? = null) {
         val id = ++subLoadId
         Thread {
             try {
@@ -1696,8 +1696,13 @@ class PlayerActivity : AppCompatActivity() {
                 // لو القراءة فشلت: نرجع للطريقة القديمة (VLC بيرسمها)
                 runOnUiThread {
                     if (!isDestroyed && id == subLoadId) {
-                        if (force) Toast.makeText(this, "❌ الترجمة ماتحمّلتش: " + (ex.message ?: ex.javaClass.simpleName).take(80), Toast.LENGTH_LONG).show()
-                        try { mp.addSlave(0, Uri.parse(src), true) } catch (_: Throwable) {}
+                        if (onFail != null) {
+                            // الترجمة دي باظت (404 / أرشيف فاضي...): نجرّب اللي بعدها لوحدنا
+                            onFail()
+                        } else {
+                            if (force) Toast.makeText(this, "❌ الترجمة ماتحمّلتش: " + (ex.message ?: ex.javaClass.simpleName).take(80), Toast.LENGTH_LONG).show()
+                            try { mp.addSlave(0, Uri.parse(src), true) } catch (_: Throwable) {}
+                        }
                     }
                 }
             }
@@ -1733,6 +1738,7 @@ class PlayerActivity : AppCompatActivity() {
         subSel = -1
         tried.clear()
         arAudio = false
+        subFailed = false
         ownCues = emptyList()
         ownOn = false
         ownIdx = -1
@@ -1800,6 +1806,7 @@ class PlayerActivity : AppCompatActivity() {
     private val tried = HashSet<Int>()
     private var arAudio = false
     private var fixRun: Runnable? = null
+    private var subFailed = false
 
     private fun parseRaw(raw: String) {
         val a = raw.substringAfter("\n@@SUB@@", "")
@@ -1847,7 +1854,7 @@ class PlayerActivity : AppCompatActivity() {
             // تشخيص: بيقولك وصلت إيه من الصفحة
             Toast.makeText(this, "ترجمة: رابط " + (if (sub.isNotEmpty()) "✓" else "✗") + " · حزمة " + (if (pk != null) "✓" else "✗"), Toast.LENGTH_SHORT).show()
             if (sub.isNotEmpty()) {
-                loadOwnSub(sub, false, pk?.optDouble("sh", 0.0) ?: 0.0, pk?.optDouble("sc", 1.0) ?: 1.0) { autoSyncLater() }
+                loadOwnSub(sub, false, pk?.optDouble("sh", 0.0) ?: 0.0, pk?.optDouble("sc", 1.0) ?: 1.0, { failOver() }) { autoSyncLater() }
             }
             if (pk != null) fetchPack()
         } catch (_: Throwable) {}
@@ -1899,7 +1906,12 @@ class PlayerActivity : AppCompatActivity() {
                 subList = l
                 val su = pj("su")
                 subSel = if (sub.isNotEmpty() && su.isNotEmpty()) l.indexOfFirst { it.u == su } else -1
-                if (sub.isEmpty() && !arAudio) selectSub(0, false)
+                if (subFailed && !arAudio) {
+                    // الترجمة الأولانية باظت قبل ما القايمة توصل: نكمّل بأقرب ترجمة شغّالة
+                    subFailed = false
+                    if (subSel >= 0) tried.add(subSel)
+                    l.indices.firstOrNull { it !in tried }?.let { selectSub(it, false) }
+                } else if (sub.isEmpty() && !arAudio) selectSub(0, false)
             }
         }.also { it.isDaemon = true }.start()
     }
@@ -1915,7 +1927,21 @@ class PlayerActivity : AppCompatActivity() {
             getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", "own").apply()
             Toast.makeText(this, "⏳ بحمّل الترجمة...", Toast.LENGTH_SHORT).show()
         }
-        loadOwnSub(s0.url, byUser, 0.0, 1.0) { autoSyncLater() }
+        loadOwnSub(s0.url, byUser, 0.0, 1.0, if (byUser) null else ({ failOver() })) { autoSyncLater() }
+    }
+
+    /** ترجمة باظت (مش بتتحمّل): بنجرّب اللي بعدها في القايمة (الأقرب للملف الأول) لحد ما واحدة تشتغل */
+    private fun failOver() {
+        if (isDestroyed || arAudio) return
+        if (subSel >= 0) tried.add(subSel)
+        if (subList.isEmpty()) { subFailed = true; return }      // القايمة لسه ماوصلتش، fetchPack هيكمّل
+        val nx = subList.indices.firstOrNull { it !in tried }
+        if (nx != null) {
+            Toast.makeText(this, "🔄 الترجمة دي ماتحمّلتش، بجرّب اللي بعدها (" + (nx + 1) + ")...", Toast.LENGTH_SHORT).show()
+            selectSub(nx, false)
+        } else {
+            Toast.makeText(this, "مفيش ترجمة عربي شغّالة للفيلم ده. جرّب 'ترجمة ذكية' من الأدوات", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun curSubU(): String = subList.getOrNull(subSel)?.u ?: pj("su")
@@ -1988,7 +2014,7 @@ class PlayerActivity : AppCompatActivity() {
         val why = d.optString("reason")
         if (why == "split" || why == "low") {
             tried.add(subSel)
-            val nx = subList.take(5).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
+            val nx = subList.take(8).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
             if (nx != null) {
                 Toast.makeText(this, "🔄 الترجمة دي مش مطابقة، بجرّب ترجمة تانية...", Toast.LENGTH_SHORT).show()
                 selectSub(nx, false)
@@ -2067,6 +2093,9 @@ class PlayerActivity : AppCompatActivity() {
             try {
                 c.connectTimeout = 15000
                 c.readTimeout = 30000
+                c.setRequestProperty("User-Agent", BROWSER_UA)
+                val code = c.responseCode
+                if (code !in 200..299) throw IllegalStateException("HTTP $code")
                 c.inputStream.use { it.readBytes() }
             } finally { c.disconnect() }
         } else {
