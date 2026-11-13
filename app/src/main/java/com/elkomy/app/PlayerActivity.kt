@@ -202,6 +202,9 @@ class PlayerActivity : AppCompatActivity() {
     // ---- ترقيات جديدة ----
     private var hwOn = true               // فك تشفير بالهاردوير، ولو فشل بنرجع للسوفتوير تلقائي
     private var hwRetried = false
+    private var resolveTried = false      // محاولة تانية بعد حل تحويلات الرابط يدويًا (TorBox وغيره)
+    private var resolvedUrl: String? = null
+    private val BROWSER_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private var locked = false
     private var lockBtn: IconView? = null
     private var hud: TextView? = null
@@ -348,7 +351,7 @@ class PlayerActivity : AppCompatActivity() {
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
         if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
-        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500"))
+        vlc = LibVLC(this, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--http-user-agent=$BROWSER_UA"))
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
             when (ev.type) {
@@ -385,11 +388,25 @@ class PlayerActivity : AppCompatActivity() {
                         Toast.makeText(this, "بجرّب وضع التوافق الكامل...", Toast.LENGTH_SHORT).show()
                         val p = (maxOf(0L, mp.time) / 1000).toInt()
                         h.post { if (!isDestroyed) { loadMedia(curUrl, p); mp.play() } }
+                    } else if (!resolveTried && cast == null && curUrl.startsWith("http")) {
+                        // تاني فشل: نحلّ التحويلات (redirects) بنفسنا ونديّ VLC الرابط النهائي
+                        resolveTried = true
+                        Toast.makeText(this, "بجرّب أحلّ تحويل الرابط...", Toast.LENGTH_SHORT).show()
+                        val cu = curUrl
+                        val p = (maxOf(0L, mp.time) / 1000).toInt()
+                        Thread {
+                            val r = resolveFinalUrl(cu)
+                            runOnUiThread {
+                                if (isDestroyed) return@runOnUiThread
+                                if (r != null && r != cu) {
+                                    resolvedUrl = r
+                                    loadMedia(cu, p)
+                                    mp.play()
+                                } else failFinal()
+                            }
+                        }.start()
                     } else {
-                        spinner.visibility = View.GONE
-                        swapping = false
-                        waitLayer?.visibility = View.GONE
-                        Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
+                        failFinal()
                     }
                 }
                 else -> {}
@@ -766,7 +783,7 @@ class PlayerActivity : AppCompatActivity() {
         plIdx++
         titleText = plTitles[plIdx]
         tvTitle?.text = titleText
-        sub = ""; subAdded = false; n = 0; hwOn = true; hwRetried = false
+        sub = ""; subAdded = false; n = 0; hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
         clearOwn()
         nextBtn?.visibility = View.GONE
         nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
@@ -836,7 +853,7 @@ class PlayerActivity : AppCompatActivity() {
         subAdded = false
         clearOwn()
         n = 0
-        hwOn = true; hwRetried = false
+        hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
         nextLabel = ""
         skipStopReport = false
         waiting = false
@@ -1891,6 +1908,60 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ================= دورة الحياة =================
+    // فحص سريع للرابط (كود HTTP + نوع الملف) بـ User-Agent معيّن، للتشخيص
+    private fun httpProbe(url: String, ua: String): String {
+        return try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.instanceFollowRedirects = true
+            c.connectTimeout = 10000
+            c.readTimeout = 10000
+            c.setRequestProperty("User-Agent", ua)
+            c.setRequestProperty("Range", "bytes=0-0")
+            val code = c.responseCode
+            val ct = c.contentType ?: "?"
+            c.disconnect()
+            "$code ($ct)"
+        } catch (e: Throwable) { (e.javaClass.simpleName + ": " + (e.message ?: "")).take(80) }
+    }
+
+    // بيمشي ورا التحويلات (redirects) بنفسه ويرجّع الرابط النهائي، أو null لو فشل
+    private fun resolveFinalUrl(url: String): String? {
+        var cur = url
+        return try {
+            for (i in 0 until 6) {
+                val c = URL(cur).openConnection() as HttpURLConnection
+                c.instanceFollowRedirects = false
+                c.connectTimeout = 10000
+                c.readTimeout = 10000
+                c.setRequestProperty("User-Agent", BROWSER_UA)
+                c.setRequestProperty("Range", "bytes=0-0")
+                val code = c.responseCode
+                val loc = c.getHeaderField("Location")
+                c.disconnect()
+                if (code in 300..399 && !loc.isNullOrEmpty()) cur = URL(URL(cur), loc).toString()
+                else return if (code in 200..299) cur else null
+            }
+            null
+        } catch (_: Throwable) { null }
+    }
+
+    private fun failFinal() {
+        spinner.visibility = View.GONE
+        swapping = false
+        waitLayer?.visibility = View.GONE
+        Toast.makeText(this, "تعذر تشغيل الفيديو", Toast.LENGTH_LONG).show()
+        val cu = curUrl
+        if (cu.startsWith("http")) {
+            Thread {
+                val a = httpProbe(cu, "VLC/3.0.20 LibVLC/3.0.20")
+                val b = httpProbe(cu, BROWSER_UA)
+                runOnUiThread {
+                    if (!isDestroyed) Toast.makeText(this, "تشخيص الرابط:\nUA بتاع VLC: $a\nUA متصفح: $b", Toast.LENGTH_LONG).show()
+                }
+            }.start()
+        }
+    }
+
     private fun loadMedia(url: String, startIntent: Int) {
         picked = false
         lastPos = 0L
@@ -1918,7 +1989,7 @@ class PlayerActivity : AppCompatActivity() {
                 castLabel?.visibility = View.GONE
             }
         }
-        val u = Uri.parse(url)
+        val u = Uri.parse(resolvedUrl ?: url)
         val m = if (u.scheme == "content") {
             val fd = try { contentResolver.openFileDescriptor(u, "r") } catch (_: Throwable) { null }
             pfd = fd
@@ -1929,7 +2000,7 @@ class PlayerActivity : AppCompatActivity() {
         // استكمال المشاهدة: آخر موضع محفوظ (من المشغّل المحلي أو من متابعة البث على التلفزيون)
         if (st <= 0) st = getSharedPreferences("pos", MODE_PRIVATE).getInt("p:$url", 0)
         if (st > 5) m.addOption(":start-time=$st")
-        if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000") }
+        if (u.scheme == "http" || u.scheme == "https") { m.addOption(":http-reconnect=true"); m.addOption(":network-caching=3000"); m.addOption(":http-user-agent=$BROWSER_UA") }
         mp.media = m
         m.release()
     }
