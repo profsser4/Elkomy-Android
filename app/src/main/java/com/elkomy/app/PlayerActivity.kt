@@ -353,6 +353,11 @@ class PlayerActivity : AppCompatActivity() {
         if (hasLocalNext()) nextLabel = plLabel(plIdx + 1)
         val vopts = arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--network-caching=1500", "--http-user-agent=$BROWSER_UA")
         arabicFontPath()?.let { vopts.add("--freetype-font=$it") }   // خط عربي لترجمة VLC (من غيره بتظهر مربعات)
+        run {   // تشخيص مؤقت: بيقولك لو الخط اتحمّل ولا لأ
+            val fp = arabicFontPath()
+            val msg = if (fp != null) "خط الترجمة: " + File(fp).name + " ✓ (" + File(fp).length() / 1024 + "KB)" else "خط الترجمة: مش لاقي خط ✗"
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
         vlc = LibVLC(this, vopts)
         mp = MediaPlayer(vlc)
         mp.setEventListener { ev ->
@@ -947,6 +952,8 @@ class PlayerActivity : AppCompatActivity() {
         try {
             val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
             if (pref == "own" && ownOn) return
+            // لو فيه ترجمة خارجية جاهزة (بتتعرض بخط التطبيق من غير مربعات) نفضّلها على المدمجة، إلا لو إنت اخترت مدمجة بنفسك
+            if (ownCues.isNotEmpty() && (pref == null || pref == "own")) { if (!ownOn) enableOwn(false); return }
             if (pref == "off") { vlcSubChosen = true; disableOwn(); try { mp.setSpuTrack(-1) } catch (_: Throwable) {}; return }
             val spu = mp.spuTracks ?: return
             if (spu.isEmpty()) return
