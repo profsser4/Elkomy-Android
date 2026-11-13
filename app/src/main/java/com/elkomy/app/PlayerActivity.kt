@@ -345,8 +345,7 @@ class PlayerActivity : AppCompatActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         val raw = intent.getStringExtra("title") ?: intent.data?.lastPathSegment ?: ""
-        sub = raw.substringAfter("\n@@SUB@@", "")
-        titleText = raw.substringBefore("\n@@SUB@@")
+        parseRaw(raw)
         plUrls = intent.getStringArrayExtra("pl_urls") ?: emptyArray()
         plTitles = intent.getStringArrayExtra("pl_titles") ?: emptyArray()
         plIdx = if (plUrls.isNotEmpty() && plUrls.size == plTitles.size) intent.getIntExtra("pl_idx", -1) else -1
@@ -372,9 +371,9 @@ class PlayerActivity : AppCompatActivity() {
                     spinner.visibility = View.GONE
                     playBtn.setKind(IconView.PAUSE)
                     scheduleHide()
-                    if (sub.isNotEmpty() && !subAdded) {
+                    if (!subAdded) {
                         subAdded = true
-                        loadOwnSub(sub)
+                        startSubs()
                     }
                     if (ownOn && mp.spuTrack != -1) { try { mp.setSpuTrack(-1) } catch (_: Throwable) {} }
                     if (!picked) {
@@ -784,7 +783,7 @@ class PlayerActivity : AppCompatActivity() {
         plIdx++
         titleText = plTitles[plIdx]
         tvTitle?.text = titleText
-        sub = ""; subAdded = false; n = 0; hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
+        sub = ""; pack = null; subAdded = false; n = 0; hwOn = true; hwRetried = false; resolveTried = false; resolvedUrl = null
         clearOwn()
         nextBtn?.visibility = View.GONE
         nextLabel = if (hasLocalNext()) plLabel(plIdx + 1) else ""
@@ -848,8 +847,7 @@ class PlayerActivity : AppCompatActivity() {
     /** MainActivity بينادي عليها لما الصفحة تجيب رابط الحلقة التالية والمشغّل لسه مفتوح */
     fun swapTo(url: String, raw: String, startSec: Int) {
         h.removeCallbacks(waitTimeout)
-        sub = raw.substringAfter("\n@@SUB@@", "")
-        titleText = raw.substringBefore("\n@@SUB@@")
+        parseRaw(raw)
         tvTitle?.text = titleText
         subAdded = false
         clearOwn()
@@ -950,6 +948,17 @@ class PlayerActivity : AppCompatActivity() {
     private fun autoPickTracks() {
         if (isDestroyed || cast != null) return
         try {
+            // لو فيه أكتر من مسار صوت: نختار العربي (المدبلج) لوحده، وإلا بنسيب الأصلي
+            val aud = (mp.audioTracks ?: emptyArray()).filter { it.id != -1 }
+            if (aud.size > 1) {
+                val ar = aud.firstOrNull { isArName(it.name) }
+                if (ar != null && mp.audioTrack != ar.id) {
+                    mp.setAudioTrack(ar.id)
+                    Toast.makeText(this, "🔊 صوت عربي: " + ar.name, Toast.LENGTH_SHORT).show()
+                }
+            }
+            audioPolicy()
+            if (arAudio) return
             val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
             if (pref == "own" && ownOn) return
             // لو فيه ترجمة خارجية جاهزة (بتتعرض بخط التطبيق من غير مربعات) نفضّلها على المدمجة، إلا لو إنت اخترت مدمجة بنفسك
@@ -1160,20 +1169,12 @@ class PlayerActivity : AppCompatActivity() {
             setPadding(dp(22), dp(18), dp(22), dp(14))
             layoutDirection = View.LAYOUT_DIRECTION_RTL
         }
-        box.addView(column("الصوت", mp.audioTracks, mp.audioTrack, false) { mp.setAudioTrack(it) },
+        box.addView(column("الصوت", mp.audioTracks, mp.audioTrack, false) { mp.setAudioTrack(it); h.postDelayed({ audioPolicy() }, 300) },
             LinearLayout.LayoutParams(0, -1, 1f))
         box.addView(View(this).apply { setBackgroundColor(0x33FFFFFF) }, LinearLayout.LayoutParams(dp(1), -1).apply {
             marginStart = dp(12); marginEnd = dp(12)
         })
-        box.addView(column("الترجمة", mp.spuTracks, mp.spuTrack, true,
-            if (ownCues.isNotEmpty()) "ترجمة الحلقة" else null, ownOn, { enableOwn() }) { id ->
-            mp.setSpuTrack(id)
-            disableOwn()
-            vlcSubChosen = id != -1
-            val nm = if (id == -1) "off" else mp.spuTracks?.firstOrNull { it.id == id }?.name
-            getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", nm).apply()
-        },
-            LinearLayout.LayoutParams(0, -1, 1f))
+        box.addView(subColumn(), LinearLayout.LayoutParams(0, -1, 1f))
         showPanel(box, 0.78f, 0.78f)
     }
 
@@ -1468,7 +1469,7 @@ class PlayerActivity : AppCompatActivity() {
             panel?.dismiss()
         })
         inner.addView(stepper("تأخير الصوت", { try { mp.audioDelay } catch (_: Throwable) { 0L } }, { try { mp.setAudioDelay(it) } catch (_: Throwable) {} }))
-        inner.addView(stepper("تأخير الترجمة", { if (ownOn) ownDelayUs else try { mp.spuDelay } catch (_: Throwable) { 0L } }, { v -> if (ownOn) { ownDelayUs = v } else { try { mp.setSpuDelay(v) } catch (_: Throwable) {} } }))
+        inner.addView(stepper("تأخير الترجمة", { if (ownOn) ownDelayUs else try { mp.spuDelay } catch (_: Throwable) { 0L } }, { v -> if (ownOn) { ownDelayUs = v; fixSoon() } else { try { mp.setSpuDelay(v) } catch (_: Throwable) {} } }))
         inner.addView(optionRow("🎚  الإيكولايزر (بيس / صوت أوضح)", eqIdx >= 0) { openEq() })
         inner.addView(optionRow("😴  مؤقت النوم", sleepRun != null || sleepAtEnd) { openSleep() })
         inner.addView(optionRow("🪟  صورة داخل صورة (PiP)", false) { enterPip() })
@@ -1677,21 +1678,28 @@ class PlayerActivity : AppCompatActivity() {
     private fun cleanSub(t: String) = t.replace(Regex("<[^>]*>"), "").replace(Regex("\\{[^}]*\\}"), "")
         .replace(Regex("\\s*\\n\\s*"), "\n").trim()
 
-    private fun loadOwnSub(src: String, force: Boolean = false) {
+    private fun loadOwnSub(src: String, force: Boolean = false, sh0: Double = 0.0, sc0: Double = 1.0, onLoaded: (() -> Unit)? = null) {
         val id = ++subLoadId
         Thread {
             try {
+                val sc = if (sc0 > 0.5) sc0 else 1.0
                 val cues = parseCues(readSubText(src))
                     .map { OwnCue(tsMs(it.start), tsMs(it.end), cleanSub(it.text)) }
                     .filter { it.t.isNotEmpty() }
                     .sortedBy { it.s }
+                    // نرجّع التوقيت الأصلي (قبل أي إزاحة جاية مع الرابط) عشان الضبط يتحسب من الأصل زي المتصفح
+                    .map { OwnCue(((it.s - sh0 * 1000.0) / sc).toLong(), ((it.e - sh0 * 1000.0) / sc).toLong(), it.t) }
                 if (cues.isEmpty()) throw IllegalStateException("empty")
                 runOnUiThread {
                     if (isDestroyed || id != subLoadId) return@runOnUiThread
-                    ownCues = cues
-                    ownIdx = -1
+                    rawCues = cues
+                    xShift = sh0
+                    xScale = sc
+                    ownDelayUs = 0L
+                    rebuildOwn()
                     val pref = getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null)
-                    if (force || (!vlcSubChosen && pref != "off")) enableOwn(false) else disableOwn()
+                    if (force || (!vlcSubChosen && pref != "off" && !arAudio)) enableOwn(false) else disableOwn()
+                    onLoaded?.invoke()
                 }
             } catch (_: Throwable) {
                 // لو القراءة فشلت: نرجع للطريقة القديمة (VLC بيرسمها)
@@ -1723,6 +1731,16 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun clearOwn() {
         subLoadId++
+        syncGen++
+        syncBusy = false
+        syncDone = false
+        rawCues = emptyList()
+        xShift = 0.0
+        xScale = 1.0
+        subList = emptyList()
+        subSel = -1
+        tried.clear()
+        arAudio = false
         ownCues = emptyList()
         ownOn = false
         ownIdx = -1
@@ -1774,6 +1792,265 @@ class PlayerActivity : AppCompatActivity() {
             if (ownShown != i) { v.text = c[i].t; ownShown = i }
             if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
         }
+    }
+
+    // ================= نظام الترجمة الكامل (زي المتصفح): ترجمات عربي الأقرب ورا بعض + ضبط بالصوت + الصوت العربي =================
+    private class PackSub(val name: String, val url: String, val u: String)
+    private var pack: JSONObject? = null
+    private var subList: List<PackSub> = emptyList()
+    private var subSel = -1
+    private var rawCues: List<OwnCue> = emptyList()
+    private var xShift = 0.0
+    private var xScale = 1.0
+    private var syncBusy = false
+    private var syncDone = false
+    private var syncGen = 0
+    private val tried = HashSet<Int>()
+    private var arAudio = false
+    private var fixRun: Runnable? = null
+
+    private fun parseRaw(raw: String) {
+        val a = raw.substringAfter("\n@@SUB@@", "")
+        val pk = a.substringAfter("\n@@PACK@@", "")
+        sub = a.substringBefore("\n@@PACK@@").trim()
+        titleText = raw.substringBefore("\n@@SUB@@").substringBefore("\n@@PACK@@")
+        pack = try { if (pk.isNotEmpty()) JSONObject(pk) else null } catch (_: Throwable) { null }
+    }
+
+    private fun isArName(n: String?): Boolean {
+        val t = n ?: return false
+        return t.contains("arab", true) || t.contains("عرب") || t.contains("مصر") ||
+            Regex("(^|[\\s\\[(\\-_])(ar|ara|arb|arz)([\\s\\])\\-_.]|$)", RegexOption.IGNORE_CASE).containsMatchIn(t)
+    }
+
+    /** لو الصوت الحالي عربي (مدبلج) نقفل الترجمة، وإلا نرجّعها */
+    private fun audioPolicy(force: Boolean = false) {
+        try {
+            val cur = mp.audioTracks?.firstOrNull { it.id == mp.audioTrack }
+            val ar = cur != null && cur.id != -1 && isArName(cur.name)
+            if (ar == arAudio && !force) return
+            arAudio = ar
+            if (ar) {
+                disableOwn()
+                try { mp.setSpuTrack(-1) } catch (_: Throwable) {}
+                Toast.makeText(this, "🔊 صوت عربي: الترجمة اتقفلت", Toast.LENGTH_SHORT).show()
+            } else if (rawCues.isNotEmpty() && getSharedPreferences("pos", MODE_PRIVATE).getString("sub_pref", null) != "off") {
+                enableOwn(false)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun rebuildOwn() {
+        ownCues = rawCues.map { OwnCue((it.s * xScale + xShift * 1000.0).toLong(), (it.e * xScale + xShift * 1000.0).toLong(), it.t) }
+        ownIdx = -1
+        ownShown = -2
+    }
+
+    private fun pj(k: String): String = pack?.optString(k, "") ?: ""
+    private fun enc(t: String) = java.net.URLEncoder.encode(t, "UTF-8")
+
+    private fun startSubs() {
+        val pk = pack
+        if (sub.isNotEmpty()) {
+            loadOwnSub(sub, false, pk?.optDouble("sh", 0.0) ?: 0.0, pk?.optDouble("sc", 1.0) ?: 1.0) { autoSync() }
+        }
+        if (pk != null) fetchPack()
+    }
+
+    private fun httpJson(url: String, body: JSONObject?): JSONObject? {
+        val c = URL(url).openConnection() as HttpURLConnection
+        return try {
+            c.connectTimeout = 15000
+            c.readTimeout = 60000
+            c.setRequestProperty("User-Agent", BROWSER_UA)
+            if (body != null) {
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+            val code = c.responseCode
+            if (code !in 200..299) null
+            else JSONObject(c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) })
+        } catch (_: Throwable) { null } finally { c.disconnect() }
+    }
+
+    /** بيجيب ترجمات العربي الأقرب للملف (مرتّبة) من السيرفر */
+    private fun fetchPack() {
+        val b = pj("b"); val tk = pj("tk"); val q = pj("q")
+        if (b.isEmpty() || tk.isEmpty() || q.isEmpty()) return
+        val gen = syncGen
+        Thread {
+            val d = httpJson("$b/subx/pack?tk=${enc(tk)}&$q&fname=${enc(pj("fn"))}", null)
+            val arr = d?.optJSONArray("items")
+            if (arr == null || arr.length() == 0) return@Thread
+            val l = ArrayList<PackSub>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                l.add(PackSub(o.optString("n"), o.optString("url"), o.optString("u")))
+            }
+            runOnUiThread {
+                if (isDestroyed || gen != syncGen) return@runOnUiThread
+                subList = l
+                val su = pj("su")
+                subSel = if (sub.isNotEmpty() && su.isNotEmpty()) l.indexOfFirst { it.u == su } else -1
+                if (sub.isEmpty() && !arAudio) selectSub(0, false)
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun selectSub(i: Int, byUser: Boolean) {
+        val s0 = subList.getOrNull(i) ?: return
+        subSel = i
+        tried.add(i)
+        syncDone = false
+        syncGen++
+        syncBusy = false
+        if (byUser) getSharedPreferences("pos", MODE_PRIVATE).edit().putString("sub_pref", "own").apply()
+        loadOwnSub(s0.url, byUser, 0.0, 1.0) { autoSync() }
+    }
+
+    private fun curSubU(): String = subList.getOrNull(subSel)?.u ?: pj("su")
+
+    private fun syncBody(): JSONObject? {
+        val pk = pack ?: return null
+        val u = curSubU()
+        if (u.isEmpty()) return null
+        val o = JSONObject().put("tk", pj("tk")).put("u", u).put("src", curUrl).put("lang", "AR")
+            .put("key", pj("k")).put("fkey", pj("fk"))
+        val s = pk.opt("s"); val e = pk.opt("e")
+        if (s != null && s != JSONObject.NULL) o.put("s", s)
+        if (e != null && e != JSONObject.NULL) o.put("e", e)
+        return o
+    }
+
+    /** ضبط الترجمة بالصوت من السيرفر (أو ضبطك المحفوظ للفيلم ده) */
+    private fun autoSync() {
+        val b = pj("b")
+        if (pack == null || b.isEmpty() || syncBusy || syncDone || rawCues.isEmpty() || arAudio || !curUrl.startsWith("http")) return
+        val body = syncBody() ?: return
+        body.put("force", false).put("dur", try { mp.length / 1000.0 } catch (_: Throwable) { 0.0 })
+        syncBusy = true
+        val gen = ++syncGen
+        val tk = pj("tk")
+        Thread {
+            var d = httpJson("$b/subx/auto?tk=${enc(tk)}", body)
+            var k = 0
+            while (d != null && !d.optBoolean("done") && k++ < 80) {
+                try { Thread.sleep(2500) } catch (_: Throwable) {}
+                if (gen != syncGen || isDestroyed) return@Thread
+                d = httpJson("$b/subx/auto?tk=${enc(tk)}&job=${enc(d.optString("job"))}", null)
+            }
+            val res = d
+            runOnUiThread {
+                if (isDestroyed || gen != syncGen) return@runOnUiThread
+                syncBusy = false
+                syncDone = true
+                if (res != null) onSyncResult(res)
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun applyXf(shift: Double, scale: Double) {
+        if (!shift.isFinite() || !scale.isFinite() || scale < 0.5 || scale > 2.0) return
+        xShift = shift
+        xScale = scale
+        ownDelayUs = 0L
+        rebuildOwn()
+    }
+
+    private fun onSyncResult(d: JSONObject) {
+        val ok = d.optBoolean("ok")
+        val sh = d.optDouble("shift", 0.0)
+        val sc = d.optDouble("scale", 1.0)
+        if (ok && d.optBoolean("manual")) {
+            applyXf(sh, sc)
+            Toast.makeText(this, "✅ ترجمة متظبطة (ضبط محفوظ)", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (ok && d.optBoolean("synced")) {
+            Toast.makeText(this, "✅ الترجمة متظبطة مع الصوت", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (ok) {
+            applyXf(sh, sc)
+            Toast.makeText(this, "🎯 اتضبطت الترجمة بالصوت (" + (if (sh > 0) "+" else "") + String.format("%.1f", sh) + " ث)", Toast.LENGTH_LONG).show()
+            return
+        }
+        val why = d.optString("reason")
+        if (why == "split" || why == "low") {
+            tried.add(subSel)
+            val nx = subList.take(5).indices.firstOrNull { it !in tried && !subList[it].name.isBlank() }
+            if (nx != null) {
+                Toast.makeText(this, "🔄 الترجمة دي مش مطابقة، بجرّب ترجمة تانية...", Toast.LENGTH_SHORT).show()
+                selectSub(nx, false)
+                return
+            }
+            Toast.makeText(this, "مقدرتش أظبط الترجمة أوتوماتيك. اظبطها من الأدوات ← تأخير الترجمة", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** ضبطك اليدوي بيتحفظ على حسابك لنفس الفيلم (وبيظهر على المتصفح والشاشة كمان) */
+    private fun fixSoon() {
+        if (pack == null) return
+        fixRun?.let { h.removeCallbacks(it) }
+        val r = Runnable { saveFix() }
+        fixRun = r
+        h.postDelayed(r, 2500)
+    }
+
+    private fun saveFix() {
+        val b = pj("b")
+        val body = syncBody() ?: return
+        if (b.isEmpty() || !curUrl.startsWith("http")) return
+        body.put("shift", Math.round((xShift + ownDelayUs / 1e6) * 100.0) / 100.0).put("scale", xScale)
+        Thread {
+            val d = httpJson("$b/subx/fix?tk=${enc(pj("tk"))}", body)
+            if (d?.optBoolean("ok") == true) runOnUiThread { Toast.makeText(this, "💾 اتحفظ ضبطك للفيلم ده على حسابك", Toast.LENGTH_SHORT).show() }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun shortName(n: String) = n.replace(Regex("\\.[a-z0-9]{2,4}$", RegexOption.IGNORE_CASE), "").take(40)
+
+    private fun subColumn(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            text = "الترجمة"
+            setTextColor(Color.WHITE)
+            textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(8), 0, 0, dp(10))
+        })
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val pr = getSharedPreferences("pos", MODE_PRIVATE)
+        val cur = mp.spuTrack
+        inner.addView(optionRow("إيقاف", !ownOn && cur == -1) {
+            disableOwn()
+            try { mp.setSpuTrack(-1) } catch (_: Throwable) {}
+            vlcSubChosen = true
+            pr.edit().putString("sub_pref", "off").apply()
+            panel?.dismiss()
+        })
+        if (ownCues.isNotEmpty() && subSel < 0) {
+            inner.addView(optionRow("ترجمة الحلقة", ownOn) { enableOwn(); panel?.dismiss() })
+        }
+        subList.forEachIndexed { i, s0 ->
+            inner.addView(optionRow("ترجمة عربي ${i + 1}  ·  " + shortName(s0.name), ownOn && subSel == i) {
+                selectSub(i, true)
+                panel?.dismiss()
+            })
+        }
+        (mp.spuTracks ?: emptyArray()).filter { it.id != -1 }.forEach { t ->
+            inner.addView(optionRow(t.name, !ownOn && cur == t.id) {
+                mp.setSpuTrack(t.id)
+                disableOwn()
+                vlcSubChosen = true
+                pr.edit().putString("sub_pref", t.name).apply()
+                panel?.dismiss()
+            })
+        }
+        col.addView(ScrollView(this).apply { addView(inner) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        return col
     }
 
     private fun readSubText(src: String): String {
@@ -2171,6 +2448,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         try { proxySock?.close() } catch (_: Throwable) {}
         h.removeCallbacks(subTick)
+        syncGen++
         h.removeCallbacks(waitTimeout)
         h.removeCallbacks(hudHide)
         h.removeCallbacks(lockHide)
