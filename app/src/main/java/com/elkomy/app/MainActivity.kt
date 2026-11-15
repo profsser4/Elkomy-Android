@@ -88,18 +88,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val httpRes = java.util.concurrent.ConcurrentHashMap<String, String>()
+    // طلب كبير واحد-اتنين في نفس الوقت بس، عشان الذاكرة ما تتملاش (كان السبب في OutOfMemoryError)
+    private val bigGate = java.util.concurrent.Semaphore(2)
+    private val MAX_RAW = 40L * 1024 * 1024
 
     private fun iptvFetch(id: String, url: String, keep: String, ttlMin: Int) {
         Thread {
             var status = 0
             var out = ""
+            var gated = false
             try {
                 val dir = File(cacheDir, "iptv").apply { mkdirs() }
                 val cf = File(dir, java.security.MessageDigest.getInstance("SHA-1")
                     .digest((url + "|" + keep).toByteArray()).joinToString("") { "%02x".format(it) } + ".json")
-                if (ttlMin > 0 && cf.exists() && System.currentTimeMillis() - cf.lastModified() < ttlMin * 60_000L) {
+                if (ttlMin > 0 && cf.exists() && System.currentTimeMillis() - cf.lastModified() < ttlMin * 60_000L && cf.length() < 12L * 1024 * 1024) {
                     out = cf.readText(); status = 200
                 } else {
+                    bigGate.acquire(); gated = true
                     var u = url
                     var hops = 0
                     while (true) {
@@ -112,10 +117,16 @@ class MainActivity : AppCompatActivity() {
                             val loc = c.getHeaderField("Location")
                             if (!loc.isNullOrBlank()) { u = java.net.URL(java.net.URL(u), loc).toString(); c.disconnect(); continue }
                         }
-                        val st = if (status in 200..399) c.inputStream else c.errorStream
-                        val raw = st?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-                        out = if (status in 200..299) trimJson(raw, keep) else raw.take(300)
-                        if (status in 200..299 && ttlMin > 0) try { cf.writeText(out) } catch (_: Exception) {}
+                        if (status in 200..299) {
+                            // بنكتب الناتج في ملف مؤقت وإحنا بنقرا الستريم (من غير ما نحط الرد الكامل في الذاكرة)
+                            val tmp = File(dir, cf.name + ".tmp")
+                            c.inputStream.use { st -> streamToFile(st, keep, tmp) }
+                            if (tmp.length() > 12L * 1024 * 1024) { tmp.delete(); throw RuntimeException("الرد كبير جدًا، اختار قسم أصغر") }
+                            out = tmp.readText()
+                            if (ttlMin > 0) { cf.delete(); tmp.renameTo(cf) } else tmp.delete()
+                        } else {
+                            out = (c.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "").take(300)
+                        }
                         c.disconnect()
                         break
                     }
@@ -123,29 +134,50 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Throwable) {
                 status = 0
                 out = (e.message ?: e.javaClass.simpleName).take(200)
-            }
+                try { System.gc() } catch (_: Throwable) {}
+            } finally { if (gated) bigGate.release() }
             httpRes[id] = out
             runJs("window.__nh&&__nh(${org.json.JSONObject.quote(id)},$status)")
         }.start()
     }
 
-    /** قايمة JSON كبيرة -> نسيب الحقول المطلوبة بس */
-    private fun trimJson(raw: String, keep: String): String {
-        if (keep.isBlank()) return raw
-        val t = raw.trimStart()
-        if (!t.startsWith("[")) return raw
-        return try {
-            val keys = keep.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val arr = org.json.JSONArray(t)
-            val res = org.json.JSONArray()
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val n = org.json.JSONObject()
-                for (k in keys) if (o.has(k)) n.put(k, o.get(k))
-                res.put(n)
+    /** بيقرا JSON ستريم وبيكتب الحقول المطلوبة بس (من غير ما يبني الشجرة كلها في الذاكرة) */
+    private fun streamToFile(input: java.io.InputStream, keep: String, dest: File) {
+        val keys = keep.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toHashSet()
+        java.io.BufferedWriter(java.io.OutputStreamWriter(java.io.FileOutputStream(dest), Charsets.UTF_8), 32768).use { w ->
+            if (keys.isEmpty()) {
+                // من غير فلترة: ننسخ بايتات بحد أقصى
+                val r = java.io.InputStreamReader(input, Charsets.UTF_8)
+                val buf = CharArray(16384); var total = 0L
+                while (true) {
+                    val n = r.read(buf); if (n < 0) break
+                    total += n; if (total > MAX_RAW) throw RuntimeException("الرد كبير جدًا")
+                    w.write(buf, 0, n)
+                }
+                return
             }
-            res.toString()
-        } catch (_: Throwable) { raw }
+            val jr = android.util.JsonReader(java.io.InputStreamReader(input, Charsets.UTF_8))
+            val jw = android.util.JsonWriter(w)
+            if (jr.peek() != android.util.JsonToken.BEGIN_ARRAY) { jr.skipValue(); jw.beginArray(); jw.endArray(); jw.flush(); return }
+            jr.beginArray(); jw.beginArray()
+            while (jr.hasNext()) {
+                if (jr.peek() != android.util.JsonToken.BEGIN_OBJECT) { jr.skipValue(); continue }
+                jr.beginObject(); jw.beginObject()
+                while (jr.hasNext()) {
+                    val k = jr.nextName()
+                    if (k !in keys) { jr.skipValue(); continue }
+                    when (jr.peek()) {
+                        android.util.JsonToken.STRING -> jw.name(k).value(jr.nextString())
+                        android.util.JsonToken.NUMBER -> { val d = jr.nextDouble(); if (d % 1.0 == 0.0 && Math.abs(d) < 9e15) jw.name(k).value(d.toLong()) else jw.name(k).value(d) }
+                        android.util.JsonToken.BOOLEAN -> jw.name(k).value(jr.nextBoolean())
+                        android.util.JsonToken.NULL -> { jr.nextNull(); jw.name(k).nullValue() }
+                        else -> jr.skipValue()
+                    }
+                }
+                jr.endObject(); jw.endObject()
+            }
+            jr.endArray(); jw.endArray(); jw.flush()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
