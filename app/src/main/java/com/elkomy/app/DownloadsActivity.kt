@@ -344,7 +344,7 @@ class DownloadsActivity : AppCompatActivity() {
                             }.setNegativeButton("إلغاء", null).show()
                     }
                     detail.visibility = View.VISIBLE
-                    detail.text = "📁 Download/Elkomy"
+                    detail.text = "📁 Download/TorFlix"
                 }
                 State.FAILED, State.CANCELED -> {
                     val resumable = item.state == State.FAILED && DownloadQueue.canResume(item)

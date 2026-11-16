@@ -298,7 +298,7 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= 29) {
                 val cv = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, n)
-                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/Elkomy")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/TorFlix")
                 }
                 val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)!!
                 contentResolver.openOutputStream(uri)!!.use { it.write(text.toByteArray()) }

@@ -484,7 +484,7 @@ class DownloadService : Service() {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, mimeOf(name))
                 put(MediaStore.Downloads.IS_PENDING, 1)
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Elkomy")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/TorFlix")
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
                 ?: throw IOException("مقدرتش أنشئ الملف في التخزين")
@@ -537,7 +537,7 @@ class DownloadService : Service() {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, mimeOf(name))
                 put(MediaStore.Downloads.IS_PENDING, 1)
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Elkomy")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/TorFlix")
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
                 ?: throw IOException("مقدرتش أنشئ الملف في التخزين")
