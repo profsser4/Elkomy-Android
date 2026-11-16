@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <application android:label="Elkomy" android:icon="@drawable/ic_launcher"
+    <application android:label="TorFlix" android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme" android:usesCleartextTraffic="true">
         <activity android:name=".MainActivity" android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden">
